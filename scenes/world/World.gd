@@ -171,8 +171,8 @@ func _process(delta: float) -> void:
 	_despawn_old(px)
 
 	# Score: (distance×0.1 + time×0.5) × score_multiplier
-	var dist := player.get_distance()
-	var smult := STAGE_DATA[difficulty_stage]["score_mult"]
+	var dist: float = player.get_distance()
+	var smult: float = float(STAGE_DATA[difficulty_stage]["score_mult"])
 	score = (dist * 0.1 + time_survived * 0.5) * smult
 
 	# Update HUD
