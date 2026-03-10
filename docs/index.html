@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dust &amp; Static — Post-Apocalyptic Survival</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+    }
+    #gameWrapper {
+      position: relative;
+    }
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+  </style>
+</head>
+<body>
+<div id="gameWrapper">
+  <canvas id="game"></canvas>
+</div>
+<script>
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+const GAME_W = 800;
+const GAME_H = 450;
+const GROUND_Y = 370;
+const GRAVITY = 0.55;
+const JUMP_VY = -13;
+const PLAYER_SPEED = 4.2;
+const HUNGER_DECAY = 1 / 60;       // per frame at 60fps
+const THIRST_DECAY = 1.5 / 60;
+
+// ─── CANVAS SETUP ────────────────────────────────────────────────────────────
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+canvas.width = GAME_W;
+canvas.height = GAME_H;
+
+function resize() {
+  const scale = Math.min(window.innerWidth / GAME_W, window.innerHeight / GAME_H);
+  canvas.style.width  = Math.floor(GAME_W * scale) + 'px';
+  canvas.style.height = Math.floor(GAME_H * scale) + 'px';
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ─── INPUT ────────────────────────────────────────────────────────────────────
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) {
+    e.preventDefault();
+  }
+  handleKeyDown(e.code);
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// ─── GAME STATE ───────────────────────────────────────────────────────────────
+let state = 'playing'; // 'playing' | 'dialogue' | 'dead'
+let worldTime = 0;
+let camera = { x: 0, targetX: 0 };
+
+// World containers
+let platforms = [];
+let crates    = [];
+let npcs      = [];
+let floatTexts = [];
+
+// World generation cursors
+let worldEdge  = 0;  // how far we've generated
+let nextCrateX = 400 + Math.random() * 400;
+let nextNpcX   = 800 + Math.random() * 400;
+
+// ─── PLAYER ───────────────────────────────────────────────────────────────────
+let player = makePlayer();
+function makePlayer() {
+  return {
+    x: 100, y: GROUND_Y - 36,
+    w: 18,  h: 36,
+    vx: 0,  vy: 0,
+    onGround: false,
+    bobPhase: 0,
+    bobY: 0,
+    facing: 1,
+    hunger: 100,
+    thirst: 100,
+    maxDist: 0,
+    deathCause: '',
+  };
+}
+
+// ─── DIALOGUE ─────────────────────────────────────────────────────────────────
+let dialogue = null;   // { text, choices:[{text,action}] }
+let dlgChoice = 0;
+
+const DIALOGUE_SCRIPTS = {
+  Merchant(npc) {
+    return {
+      speaker: npc.name + ' — Merchant',
+      text: '"Supplies are scarce out here. I can make a trade… if the price is right."',
+      choices: [
+        { text: 'Trade food for water (+25 water, -20 food)',
+          action() { player.hunger = Math.max(0, player.hunger - 20);
+                     player.thirst = Math.min(100, player.thirst + 25); } },
+        { text: 'Trade water for food (-20 water, +25 food)',
+          action() { player.thirst = Math.max(0, player.thirst - 20);
+                     player.hunger = Math.min(100, player.hunger + 25); } },
+        { text: 'Walk away', action() {} },
+      ],
+    };
+  },
+  Wanderer(npc) {
+    return {
+      speaker: npc.name + ' — Wanderer',
+      text: `"I've been walking for days. Found more than I can carry — take some."`,
+      choices: [
+        { text: 'Take food rations (+20 food)',
+          action() { player.hunger = Math.min(100, player.hunger + 20); } },
+        { text: 'Take water canteen (+25 water)',
+          action() { player.thirst = Math.min(100, player.thirst + 25); } },
+        { text: 'Decline — keep moving', action() {} },
+      ],
+    };
+  },
+  Hostile(npc) {
+    return {
+      speaker: npc.name + ' — Hostile',
+      text: '"Your supplies or your life. I\'ve killed for less. Don\'t test me."',
+      choices: [
+        { text: 'Hand over food (-30 food)',
+          action() { player.hunger = Math.max(0, player.hunger - 30); } },
+        { text: 'Hand over water (-30 water)',
+          action() { player.thirst = Math.max(0, player.thirst - 30); } },
+        { text: '▶ Sprint away!',
+          action() { player.vx = player.facing * 10; } },
+      ],
+    };
+  },
+};
+
+// ─── WORLD GENERATION ─────────────────────────────────────────────────────────
+const NAMES = {
+  Merchant: ['Carla', 'Ruiz', 'Mika', 'Dex', 'Yeva'],
+  Wanderer: ['Ghost', 'Ray', 'Ash', 'Crow', 'Finn'],
+  Hostile:  ['Scar', 'Gravel', 'Rust', 'Fang', 'Brix'],
+};
+const NPC_COLORS = { Merchant: '#9b59b6', Wanderer: '#27ae60', Hostile: '#c0392b' };
+
+function pickName(type) {
+  const arr = NAMES[type];
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function generateWorld(upToX) {
+  // Generate in 200px chunks
+  while (worldEdge < upToX + GAME_W * 2) {
+    const ex = worldEdge;
+
+    // Random raised platforms
+    if (Math.random() < 0.45) {
+      const pw = 80 + Math.random() * 130;
+      const py = GROUND_Y - 70 - Math.random() * 90;
+      platforms.push({ x: ex + 30 + Math.random() * 60, y: py, w: pw, h: 14 });
+    }
+
+    worldEdge += 200;
+  }
+
+  // Crates
+  while (nextCrateX < upToX + GAME_W * 2) {
+    crates.push({
+      x: nextCrateX,
+      y: GROUND_Y - 28,
+      w: 26, h: 26,
+      collected: false,
+      glow: Math.random() * Math.PI * 2,
+    });
+    nextCrateX += 400 + Math.random() * 400;
+  }
+
+  // NPCs
+  while (nextNpcX < upToX + GAME_W * 2) {
+    const types = ['Merchant', 'Wanderer', 'Hostile'];
+    const type = types[Math.floor(Math.random() * types.length)];
+    npcs.push({
+      x: nextNpcX,
+      y: GROUND_Y - 38,
+      w: 16, h: 38,
+      type, name: pickName(type),
+      talked: false,
+      bob: Math.random() * Math.PI * 2,
+      color: NPC_COLORS[type],
+    });
+    nextNpcX += 800 + Math.random() * 400;
+  }
+}
+
+generateWorld(0);
+
+// Cull entities too far behind camera
+function cullWorld() {
+  const cullX = camera.x - GAME_W;
+  platforms = platforms.filter(p => p.x + p.w > cullX);
+  crates    = crates.filter(c => c.x + c.w > cullX || c.collected);
+  npcs      = npcs.filter(n => n.x + n.w > cullX);
+  // Remove collected crates that are far behind
+  crates    = crates.filter(c => !c.collected || c.x > cullX);
+}
+
+// ─── PHYSICS HELPERS ──────────────────────────────────────────────────────────
+function resolveCollisions(ent) {
+  let grounded = false;
+
+  // Ground
+  if (ent.y + ent.h >= GROUND_Y) {
+    ent.y = GROUND_Y - ent.h;
+    ent.vy = 0;
+    grounded = true;
+  }
+
+  // Platforms (only from above)
+  for (const p of platforms) {
+    if (ent.x + ent.w > p.x && ent.x < p.x + p.w) {
+      const prevBottom = ent.y + ent.h - ent.vy;
+      if (prevBottom <= p.y + 2 && ent.y + ent.h >= p.y && ent.vy >= 0) {
+        ent.y = p.y - ent.h;
+        ent.vy = 0;
+        grounded = true;
+      }
+    }
+  }
+
+  return grounded;
+}
+
+// ─── INTERACTION ──────────────────────────────────────────────────────────────
+function tryInteract() {
+  const px = player.x + player.w / 2;
+  const py = player.y + player.h / 2;
+
+  // Crates first
+  for (const c of crates) {
+    if (c.collected) continue;
+    const cx = c.x + c.w / 2;
+    const cy = c.y + c.h / 2;
+    if (Math.abs(cx - px) < 60 && Math.abs(cy - py) < 60) {
+      c.collected = true;
+      const r = Math.random();
+      let msg;
+      if (r < 0.35) {
+        player.hunger = Math.min(100, player.hunger + 22);
+        msg = '+FOOD';
+      } else if (r < 0.70) {
+        player.thirst = Math.min(100, player.thirst + 22);
+        msg = '+WATER';
+      } else {
+        player.hunger = Math.min(100, player.hunger + 12);
+        player.thirst = Math.min(100, player.thirst + 12);
+        msg = '+SUPPLIES';
+      }
+      floatTexts.push({ x: c.x + c.w / 2, y: c.y - 4, text: msg, life: 1 });
+      return;
+    }
+  }
+
+  // NPCs
+  for (const n of npcs) {
+    if (n.talked) continue;
+    const nx = n.x + n.w / 2;
+    const ny = n.y + n.h / 2;
+    if (Math.abs(nx - px) < 80 && Math.abs(ny - py) < 80) {
+      n.talked = true;
+      dialogue = DIALOGUE_SCRIPTS[n.type](n);
+      dlgChoice = 0;
+      state = 'dialogue';
+      return;
+    }
+  }
+}
+
+// ─── KEY HANDLER ──────────────────────────────────────────────────────────────
+function handleKeyDown(code) {
+  if (state === 'dead') {
+    if (code === 'KeyR') resetGame();
+    return;
+  }
+
+  if (state === 'dialogue') {
+    if (code === 'ArrowUp' || code === 'KeyW') {
+      dlgChoice = Math.max(0, dlgChoice - 1);
+    } else if (code === 'ArrowDown' || code === 'KeyS') {
+      dlgChoice = Math.min(dialogue.choices.length - 1, dlgChoice + 1);
+    } else if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
+      dialogue.choices[dlgChoice].action();
+      dialogue = null;
+      dlgChoice = 0;
+      state = 'playing';
+    }
+    return;
+  }
+
+  // Playing
+  if (code === 'Space' || code === 'ArrowUp' || code === 'KeyW') {
+    if (player.onGround) player.vy = JUMP_VY;
+  }
+  if (code === 'KeyE') tryInteract();
+}
+
+// ─── UPDATE ───────────────────────────────────────────────────────────────────
+let lastTs = 0;
+
+function update(dt) {
+  if (state !== 'playing') return;
+
+  worldTime += dt;
+
+  // Horizontal movement
+  let moving = false;
+  if (keys['ArrowLeft'] || keys['KeyA']) {
+    player.vx = -PLAYER_SPEED;
+    player.facing = -1;
+    moving = true;
+  } else if (keys['ArrowRight'] || keys['KeyD']) {
+    player.vx = PLAYER_SPEED;
+    player.facing = 1;
+    moving = true;
+  } else {
+    player.vx *= 0.75;
+  }
+
+  // Jump (held is fine; only triggers on keydown)
+  player.vy += GRAVITY;
+
+  player.x += player.vx;
+  player.y += player.vy;
+
+  // Left boundary
+  if (player.x < 30) { player.x = 30; player.vx = 0; }
+
+  player.onGround = resolveCollisions(player);
+
+  // Walk bob
+  if (player.onGround && moving) {
+    player.bobPhase += 0.22;
+    player.bobY = Math.sin(player.bobPhase) * 2.5;
+  } else {
+    player.bobY *= 0.85;
+  }
+
+  // Distance
+  player.maxDist = Math.max(player.maxDist, Math.floor(player.x - 130));
+
+  // Camera
+  camera.targetX = player.x - GAME_W * 0.32;
+  if (camera.targetX < 0) camera.targetX = 0;
+  camera.x += (camera.targetX - camera.x) * 0.12;
+
+  // World gen + cull
+  generateWorld(camera.x + GAME_W);
+  cullWorld();
+
+  // Stat decay
+  player.hunger = Math.max(0, player.hunger - HUNGER_DECAY * dt * 60);
+  player.thirst = Math.max(0, player.thirst - THIRST_DECAY * dt * 60);
+
+  // Death
+  if (player.hunger <= 0 || player.thirst <= 0) {
+    player.deathCause = player.hunger <= 0 ? 'Starvation' : 'Dehydration';
+    state = 'dead';
+  }
+
+  // Float texts
+  for (let i = floatTexts.length - 1; i >= 0; i--) {
+    floatTexts[i].y -= 0.8;
+    floatTexts[i].life -= 0.018;
+    if (floatTexts[i].life <= 0) floatTexts.splice(i, 1);
+  }
+}
+
+// ─── PARALLAX LAYERS ──────────────────────────────────────────────────────────
+// Precomputed building/ruin shapes as [x, y, w, h] within a 800px tile
+const CITY_BUILDINGS = [
+  [0,  180, 55, 190], [50, 120, 75, 250], [118, 150, 48, 220],
+  [158, 90,  65, 280], [216, 135, 85, 235], [293, 72, 58, 298],
+  [342, 115, 76, 255], [408, 95, 52, 275], [452, 148, 68, 222],
+  [510, 78, 60, 292], [562, 108, 82, 262], [634, 140, 57, 230],
+  [682, 88, 72, 282], [746, 118, 88, 252],
+];
+const RUIN_SHAPES = [
+  [10,210,38,160], [58,225,28,145], [96,188,46,172], [168,215,33,155],
+  [212,194,42,166], [265,220,38,150], [315,180,52,180], [385,210,29,160],
+  [426,190,47,170], [485,225,38,145], [536,198,43,162], [598,214,33,156],
+  [642,185,56,175], [716,205,38,165], [766,220,48,150],
+];
+const RUBBLE_SHAPES = [
+  [15,348,32,22],[65,356,18,16],[115,342,38,26],[198,350,24,20],
+  [255,338,33,28],[338,352,19,20],[395,346,42,24],[475,352,23,22],
+  [535,341,28,30],[618,355,32,20],[675,346,19,26],[738,352,38,22],
+];
+
+function drawParallaxLayer(shapes, color, parallaxFactor, tileW) {
+  ctx.fillStyle = color;
+  const offset = (camera.x * parallaxFactor) % tileW;
+  const startTile = -1;
+  const endTile   = Math.ceil(GAME_W / tileW) + 1;
+  for (let t = startTile; t <= endTile; t++) {
+    const ox = t * tileW - offset;
+    for (const [sx, sy, sw, sh] of shapes) {
+      ctx.fillRect(ox + sx, sy, sw, sh);
+    }
+  }
+}
+
+function drawParallax() {
+  // Sky gradient already handled by bg fill
+  // Layer 1 — far city skyline
+  drawParallaxLayer(CITY_BUILDINGS, '#111128', 0.08, 800);
+  // Layer 2 — mid ruins
+  drawParallaxLayer(RUIN_SHAPES, '#15152e', 0.22, 800);
+  // Layer 3 — near rubble silhouette
+  drawParallaxLayer(RUBBLE_SHAPES, '#1c1c38', 0.48, 800);
+}
+
+// ─── DRAW ─────────────────────────────────────────────────────────────────────
+function draw(ts) {
+  // Background
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  drawParallax();
+
+  // World transform
+  ctx.save();
+  ctx.translate(-Math.round(camera.x), 0);
+
+  // Ground
+  ctx.fillStyle = '#1e1e32';
+  ctx.fillRect(camera.x - 10, GROUND_Y, GAME_W + 20, GAME_H - GROUND_Y + 10);
+  ctx.fillStyle = '#2d2d4a';
+  ctx.fillRect(camera.x - 10, GROUND_Y, GAME_W + 20, 5);
+  // Ground texture lines
+  ctx.strokeStyle = '#25253d';
+  ctx.lineWidth = 1;
+  for (let lx = Math.floor(camera.x / 40) * 40; lx < camera.x + GAME_W; lx += 40) {
+    ctx.beginPath();
+    ctx.moveTo(lx, GROUND_Y + 5);
+    ctx.lineTo(lx, GAME_H);
+    ctx.stroke();
+  }
+
+  // Platforms
+  for (const p of platforms) {
+    if (p.x + p.w < camera.x - 10 || p.x > camera.x + GAME_W + 10) continue;
+    ctx.fillStyle = '#1e1e32';
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+    ctx.fillStyle = '#2d2d4a';
+    ctx.fillRect(p.x, p.y, p.w, 4);
+    ctx.fillStyle = '#3a3a5c';
+    ctx.fillRect(p.x + 1, p.y, p.w - 2, 2);
+  }
+
+  // Crates
+  for (const c of crates) {
+    if (c.collected) continue;
+    if (c.x + c.w < camera.x - 20 || c.x > camera.x + GAME_W + 20) continue;
+
+    c.glow = (c.glow + 0.05) % (Math.PI * 2);
+    const g = (Math.sin(c.glow) + 1) / 2;
+
+    // Shadow under crate
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(c.x + c.w / 2, GROUND_Y + 3, c.w / 2 + 2, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Glow halo
+    ctx.shadowColor = '#ffa040';
+    ctx.shadowBlur = 8 + g * 18;
+
+    // Crate body
+    const r = Math.floor(190 + g * 65);
+    const gr = Math.floor(75 + g * 45);
+    ctx.fillStyle = `rgb(${r},${gr},0)`;
+    ctx.fillRect(c.x, c.y, c.w, c.h);
+
+    ctx.shadowBlur = 0;
+
+    // Crate details
+    ctx.strokeStyle = '#ffd700';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(c.x + 3, c.y + 3, c.w - 6, c.h - 6);
+    ctx.beginPath();
+    ctx.moveTo(c.x + c.w / 2, c.y + 3);
+    ctx.lineTo(c.x + c.w / 2, c.y + c.h - 3);
+    ctx.moveTo(c.x + 3, c.y + c.h / 2);
+    ctx.lineTo(c.x + c.w - 3, c.y + c.h / 2);
+    ctx.stroke();
+
+    // [E] prompt
+    const dxC = Math.abs((c.x + c.w / 2) - (player.x + player.w / 2));
+    if (dxC < 60) {
+      ctx.fillStyle = '#ffd700';
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('[E]', c.x + c.w / 2, c.y - 7);
+    }
+  }
+
+  // NPCs
+  for (const n of npcs) {
+    if (n.x + n.w < camera.x - 20 || n.x > camera.x + GAME_W + 20) continue;
+
+    n.bob = (n.bob + 0.025) % (Math.PI * 2);
+    const bob = Math.sin(n.bob) * 2;
+
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(n.x + n.w / 2, GROUND_Y + 3, n.w / 2 + 3, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Legs (simple)
+    ctx.fillStyle = n.talked ? '#555' : n.color;
+    ctx.fillRect(n.x + 1,       n.y + n.h - 12 + bob, 5, 12);
+    ctx.fillRect(n.x + n.w - 6, n.y + n.h - 12 + bob, 5, 12);
+
+    // Body
+    ctx.fillStyle = n.talked ? '#444' : n.color;
+    ctx.fillRect(n.x, n.y + 14 + bob, n.w, n.h - 26);
+
+    // Arms
+    ctx.fillStyle = n.talked ? '#4a4a4a' : n.color;
+    ctx.fillRect(n.x - 4,  n.y + 16 + bob, 5, 14);
+    ctx.fillRect(n.x + n.w - 1, n.y + 16 + bob, 5, 14);
+
+    // Head
+    ctx.fillStyle = '#d4a574';
+    ctx.fillRect(n.x + 1, n.y + 1 + bob, n.w - 2, 14);
+
+    // Eyes
+    ctx.fillStyle = '#222';
+    ctx.fillRect(n.x + 3, n.y + 5 + bob, 3, 3);
+    ctx.fillRect(n.x + n.w - 6, n.y + 5 + bob, 3, 3);
+
+    // Name label
+    ctx.textAlign = 'center';
+    const nx = n.x + n.w / 2;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(nx - 28, n.y - 22 + bob, 56, 13);
+    ctx.fillStyle = n.talked ? '#666' : '#fff';
+    ctx.font = 'bold 9px monospace';
+    ctx.fillText(n.name, nx, n.y - 12 + bob);
+
+    // Type badge
+    ctx.fillStyle = n.talked ? '#555' : n.color;
+    ctx.font = '8px monospace';
+    ctx.fillText(n.type.toUpperCase(), nx, n.y - 24 + bob);
+
+    // [E] prompt
+    if (!n.talked) {
+      const dxN = Math.abs((n.x + n.w / 2) - (player.x + player.w / 2));
+      if (dxN < 80) {
+        ctx.fillStyle = '#ffd700';
+        ctx.font = 'bold 10px monospace';
+        ctx.fillText('[E]', nx, n.y - 36 + bob);
+      }
+    }
+  }
+
+  // Player
+  {
+    const px = player.x;
+    const py = player.y + player.bobY;
+    const pw = player.w;
+    const ph = player.h;
+
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath();
+    ctx.ellipse(px + pw / 2, GROUND_Y + 3, pw / 2 + 2, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Legs
+    ctx.fillStyle = '#005f55';
+    ctx.fillRect(px + 1, py + ph - 10, 6, 10);
+    ctx.fillRect(px + pw - 7, py + ph - 10, 6, 10);
+
+    // Body
+    ctx.fillStyle = '#00b894';
+    ctx.fillRect(px, py + 14, pw, ph - 24);
+
+    // Arms (with slight swing based on bob)
+    const armSwing = player.bobY * 0.6;
+    ctx.fillStyle = '#009e80';
+    ctx.fillRect(px - 4, py + 16 + armSwing, 5, 12);
+    ctx.fillRect(px + pw - 1, py + 16 - armSwing, 5, 12);
+
+    // Head
+    ctx.fillStyle = '#00cec9';
+    ctx.fillRect(px + 1, py + 1, pw - 2, 14);
+
+    // Eyes / visor
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(px + 2, py + 4, pw - 4, 5);
+    ctx.fillStyle = 'rgba(0,255,255,0.4)';
+    ctx.fillRect(px + 3, py + 5, pw - 6, 3);
+
+    // Highlight edge
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fillRect(px, py, 3, ph);
+  }
+
+  // Floating texts
+  ctx.textAlign = 'center';
+  for (const ft of floatTexts) {
+    ctx.globalAlpha = ft.life;
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 13px monospace';
+    ctx.fillText(ft.text, ft.x, ft.y);
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.restore(); // end world transform
+
+  // HUD
+  drawHUD();
+
+  // Overlays
+  if (state === 'dialogue') drawDialogue();
+  if (state === 'dead')     drawDead();
+}
+
+// ─── HUD ──────────────────────────────────────────────────────────────────────
+function drawHUD() {
+  // Panel
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  roundRect(ctx, 10, 10, 215, 88, 4);
+  ctx.fill();
+  ctx.strokeStyle = '#e94560';
+  ctx.lineWidth = 1;
+  roundRect(ctx, 10, 10, 215, 88, 4);
+  ctx.stroke();
+
+  // Title
+  ctx.fillStyle = '#e94560';
+  ctx.font = 'bold 11px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('▸ DUST & STATIC', 18, 28);
+
+  // Hunger bar
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(18, 36, 170, 11);
+  const hpct = player.hunger / 100;
+  ctx.fillStyle = hpct > 0.4 ? '#00ff88' : hpct > 0.2 ? '#ffd700' : '#e94560';
+  ctx.fillRect(18, 36, Math.max(0, hpct * 170), 11);
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(18, 36, 170, 11);
+  ctx.fillStyle = '#fff';
+  ctx.font = '8px monospace';
+  ctx.fillText(`FOOD ${Math.ceil(player.hunger).toString().padStart(3)}%`, 192, 46);
+
+  // Thirst bar
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(18, 52, 170, 11);
+  const tpct = player.thirst / 100;
+  ctx.fillStyle = tpct > 0.4 ? '#00e6ff' : tpct > 0.2 ? '#ffd700' : '#e94560';
+  ctx.fillRect(18, 52, Math.max(0, tpct * 170), 11);
+  ctx.strokeStyle = '#333';
+  ctx.strokeRect(18, 52, 170, 11);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(`H₂O  ${Math.ceil(player.thirst).toString().padStart(3)}%`, 192, 62);
+
+  // Stats row
+  ctx.fillStyle = '#8888aa';
+  ctx.font = '9px monospace';
+  const dist    = player.maxDist;
+  const elapsed = Math.floor(worldTime);
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const ss = String(elapsed % 60).padStart(2, '0');
+  ctx.fillText(`DIST ${dist}m`, 18, 80);
+  ctx.fillText(`TIME ${mm}:${ss}`, 100, 80);
+
+  // Controls hint (top-right corner)
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  roundRect(ctx, GAME_W - 168, 10, 158, 54, 4);
+  ctx.fill();
+  ctx.fillStyle = '#44445a';
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('WASD / ARROWS  Move', GAME_W - 163, 27);
+  ctx.fillText('SPACE / W / ↑   Jump', GAME_W - 163, 39);
+  ctx.fillText('E               Interact', GAME_W - 163, 51);
+}
+
+// ─── DIALOGUE BOX ─────────────────────────────────────────────────────────────
+function drawDialogue() {
+  if (!dialogue) return;
+
+  // Dim
+  ctx.fillStyle = 'rgba(0,0,0,0.72)';
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  const bx = 70, by = GAME_H / 2 - 100, bw = GAME_W - 140, bh = 220;
+
+  // Box
+  ctx.fillStyle = '#0a0a18';
+  roundRect(ctx, bx, by, bw, bh, 6);
+  ctx.fill();
+  ctx.strokeStyle = '#e94560';
+  ctx.lineWidth = 2;
+  roundRect(ctx, bx, by, bw, bh, 6);
+  ctx.stroke();
+
+  // Speaker
+  ctx.fillStyle = '#e94560';
+  ctx.font = 'bold 11px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(dialogue.speaker, bx + 16, by + 22);
+
+  // Divider
+  ctx.strokeStyle = '#2a2a45';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(bx + 16, by + 30);
+  ctx.lineTo(bx + bw - 16, by + 30);
+  ctx.stroke();
+
+  // Body text (word-wrap)
+  ctx.fillStyle = '#ccccdd';
+  ctx.font = '12px monospace';
+  const maxW = bw - 40;
+  const words = dialogue.text.split(' ');
+  let line = '';
+  let ly = by + 50;
+  for (const w of words) {
+    const test = line + w + ' ';
+    if (ctx.measureText(test).width > maxW && line) {
+      ctx.fillText(line.trim(), bx + 20, ly);
+      line = w + ' ';
+      ly += 18;
+    } else {
+      line = test;
+    }
+  }
+  if (line.trim()) ctx.fillText(line.trim(), bx + 20, ly);
+  ly += 28;
+
+  // Choices
+  for (let i = 0; i < dialogue.choices.length; i++) {
+    const sel = i === dlgChoice;
+    if (sel) {
+      ctx.fillStyle = 'rgba(233,69,96,0.2)';
+      roundRect(ctx, bx + 12, ly - 14, bw - 24, 20, 3);
+      ctx.fill();
+      ctx.strokeStyle = '#e94560';
+      ctx.lineWidth = 1;
+      roundRect(ctx, bx + 12, ly - 14, bw - 24, 20, 3);
+      ctx.stroke();
+    }
+    ctx.fillStyle = sel ? '#fff' : '#778';
+    ctx.font = (sel ? 'bold ' : '') + '11px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText((sel ? '▶ ' : '  ') + dialogue.choices[i].text, bx + 20, ly);
+    ly += 24;
+  }
+
+  // Footer
+  ctx.fillStyle = '#44445a';
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('↑↓ / W·S to navigate   E / ENTER to confirm', GAME_W / 2, by + bh - 10);
+}
+
+// ─── DEATH SCREEN ─────────────────────────────────────────────────────────────
+function drawDead() {
+  ctx.fillStyle = 'rgba(0,0,0,0.88)';
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  // Glitch title
+  ctx.fillStyle = '#e94560';
+  ctx.font = 'bold 48px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('YOU DIED', GAME_W / 2, GAME_H / 2 - 70);
+
+  // Cause
+  ctx.fillStyle = '#888';
+  ctx.font = '14px monospace';
+  ctx.fillText(`Cause of death: ${player.deathCause}`, GAME_W / 2, GAME_H / 2 - 38);
+
+  // Stats
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 18px monospace';
+  ctx.fillText(`Distance traveled: ${player.maxDist}m`, GAME_W / 2, GAME_H / 2 + 2);
+  const elapsed = Math.floor(worldTime);
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const ss = String(elapsed % 60).padStart(2, '0');
+  ctx.fillText(`Time survived: ${mm}:${ss}`, GAME_W / 2, GAME_H / 2 + 30);
+
+  // Restart
+  ctx.fillStyle = '#00ff88';
+  ctx.font = 'bold 20px monospace';
+  ctx.fillText('[ R ]  RESTART', GAME_W / 2, GAME_H / 2 + 80);
+
+  ctx.fillStyle = '#444';
+  ctx.font = '11px monospace';
+  ctx.fillText('The wasteland remembers no one.', GAME_W / 2, GAME_H / 2 + 108);
+}
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// ─── RESET ────────────────────────────────────────────────────────────────────
+function resetGame() {
+  player       = makePlayer();
+  state        = 'playing';
+  worldTime    = 0;
+  camera       = { x: 0, targetX: 0 };
+  platforms    = [];
+  crates       = [];
+  npcs         = [];
+  floatTexts   = [];
+  dialogue     = null;
+  dlgChoice    = 0;
+  worldEdge    = 0;
+  nextCrateX   = 400 + Math.random() * 400;
+  nextNpcX     = 800 + Math.random() * 400;
+  generateWorld(0);
+}
+
+// ─── TITLE SCREEN ─────────────────────────────────────────────────────────────
+let titleActive = true;
+let titlePhase  = 0;
+
+function drawTitle() {
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+  drawParallax();
+
+  titlePhase += 0.02;
+
+  // Animated static lines
+  for (let i = 0; i < 6; i++) {
+    if (Math.random() < 0.3) {
+      const ly = Math.random() * GAME_H;
+      ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.04})`;
+      ctx.fillRect(0, ly, GAME_W, 1);
+    }
+  }
+
+  // Ground
+  ctx.fillStyle = '#1e1e32';
+  ctx.fillRect(0, GROUND_Y, GAME_W, GAME_H - GROUND_Y);
+  ctx.fillStyle = '#2d2d4a';
+  ctx.fillRect(0, GROUND_Y, GAME_W, 5);
+
+  // Title text
+  const flicker = Math.sin(titlePhase * 7) > 0.85 ? 0.6 : 1;
+  ctx.globalAlpha = flicker;
+  ctx.fillStyle = '#e94560';
+  ctx.font = 'bold 56px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('DUST & STATIC', GAME_W / 2, GAME_H / 2 - 60);
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = '#888';
+  ctx.font = '14px monospace';
+  ctx.fillText('post-apocalyptic survival', GAME_W / 2, GAME_H / 2 - 30);
+
+  // Pulsing start prompt
+  const pulse = (Math.sin(titlePhase * 3) + 1) / 2;
+  ctx.fillStyle = `rgba(0,255,136,${0.5 + pulse * 0.5})`;
+  ctx.font = 'bold 16px monospace';
+  ctx.fillText('Press SPACE or ENTER to begin', GAME_W / 2, GAME_H / 2 + 30);
+
+  // Controls summary
+  ctx.fillStyle = '#44445a';
+  ctx.font = '11px monospace';
+  ctx.fillText('WASD / Arrows: Move & Jump   E: Interact with crates & survivors', GAME_W / 2, GAME_H / 2 + 65);
+  ctx.fillText('Manage Hunger & Thirst — survive as long as you can', GAME_W / 2, GAME_H / 2 + 82);
+
+  ctx.fillStyle = '#2a2a4a';
+  ctx.font = '9px monospace';
+  ctx.fillText('a game about the end of things', GAME_W / 2, GAME_H - 16);
+}
+
+// Handle title screen input
+window.addEventListener('keydown', e => {
+  if (titleActive && (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyE')) {
+    titleActive = false;
+    state = 'playing';
+    worldTime = 0;
+  }
+}, { capture: true });
+
+// ─── MAIN LOOP ────────────────────────────────────────────────────────────────
+function loop(ts) {
+  const dt = Math.min((ts - lastTs) / 16.667, 3.5); // cap at ~3.5 frames
+  lastTs = ts;
+
+  if (titleActive) {
+    drawTitle();
+  } else {
+    update(dt);
+    draw(ts);
+  }
+
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(ts => { lastTs = ts; requestAnimationFrame(loop); });
+</script>
+</body>
+</html>
