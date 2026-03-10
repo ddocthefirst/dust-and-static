@@ -38,9 +38,9 @@ const GROUND_Y = 370;
 const GRAVITY = 0.55;
 const JUMP_VY = -13;
 const PLAYER_SPEED = 4.2;
-const HUNGER_DECAY = 0.4 / 60;     // per frame at 60fps (reduced from 1.0)
-const THIRST_DECAY = 0.6 / 60;     // per frame at 60fps (reduced from 1.5)
-const GRACE_PERIOD = 10;           // seconds before decay starts
+const HUNGER_DECAY = 0.2 / 60;     // per frame at 60fps (reduced from 0.4)
+const THIRST_DECAY = 0.25 / 60;    // per frame at 60fps (reduced from 0.6)
+const GRACE_PERIOD = 20;           // seconds before decay starts
 
 // ─── CANVAS SETUP ────────────────────────────────────────────────────────────
 const canvas = document.getElementById('game');
@@ -240,10 +240,9 @@ const DIALOGUE_SCRIPTS = {
       speaker: npc.name + ' — Wanderer',
       text: `"I've been walking for days. Found more than I can carry — take some."`,
       choices: [
-        { text: 'Take food rations (+20 food)',
-          action() { player.hunger = Math.min(100, player.hunger + 20); } },
-        { text: 'Take water canteen (+25 water)',
-          action() { player.thirst = Math.min(100, player.thirst + 25); } },
+        { text: 'Take stash (+30 food, +20 water)',
+          action() { player.hunger = Math.min(100, player.hunger + 30);
+                     player.thirst = Math.min(100, player.thirst + 20); } },
         { text: 'Decline — keep moving', action() {} },
       ],
     };
@@ -301,7 +300,7 @@ function generateWorld(upToX) {
       collected: false,
       glow: Math.random() * Math.PI * 2,
     });
-    nextCrateX += 300 + Math.random() * 200;
+    nextCrateX += 250 + Math.random() * 150;
   }
 
   // NPCs
@@ -374,15 +373,15 @@ function tryInteract() {
       const r = Math.random();
       let msg;
       if (r < 0.35) {
-        const foodAmt = 25 + Math.floor(Math.random() * 16); // +25 to +40
+        const foodAmt = 35 + Math.floor(Math.random() * 21); // +35 to +55
         player.hunger = Math.min(100, player.hunger + foodAmt);
         msg = `+FOOD +${foodAmt}`;
       } else if (r < 0.70) {
-        const waterAmt = 30 + Math.floor(Math.random() * 16); // +30 to +45
+        const waterAmt = 40 + Math.floor(Math.random() * 21); // +40 to +60
         player.thirst = Math.min(100, player.thirst + waterAmt);
         msg = `+WATER +${waterAmt}`;
       } else {
-        const medAmt = 20 + Math.floor(Math.random() * 16); // +20 to +35
+        const medAmt = 30 + Math.floor(Math.random() * 21); // +30 to +50
         player.hunger = Math.min(100, player.hunger + medAmt);
         player.thirst = Math.min(100, player.thirst + medAmt);
         msg = `+MED +${medAmt}`;
@@ -779,28 +778,63 @@ function drawHUD() {
   ctx.fillText('▸ DUST & STATIC', 18, 28);
 
   // Hunger bar
+  const hpct = player.hunger / 100;
+  const hungerCritical = player.hunger < 15;
+  const hungerFlash = hungerCritical && Math.floor(Date.now() / 400) % 2 === 0;
   ctx.fillStyle = '#1a1a2e';
   ctx.fillRect(18, 36, 170, 11);
-  const hpct = player.hunger / 100;
-  ctx.fillStyle = hpct > 0.4 ? '#00ff88' : hpct > 0.2 ? '#ffd700' : '#e94560';
+  ctx.fillStyle = hungerFlash ? '#ff4400'
+                : hpct > 0.4  ? '#00ff88'
+                : hpct > 0.2  ? '#ffd700'
+                :               '#e94560';
   ctx.fillRect(18, 36, Math.max(0, hpct * 170), 11);
-  ctx.strokeStyle = '#333';
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = hungerFlash ? '#ff8800' : '#333';
+  ctx.lineWidth = hungerFlash ? 2 : 1;
   ctx.strokeRect(18, 36, 170, 11);
+  ctx.lineWidth = 1;
   ctx.fillStyle = '#fff';
   ctx.font = '8px monospace';
   ctx.fillText(`FOOD ${Math.ceil(player.hunger).toString().padStart(3)}%`, 192, 46);
 
   // Thirst bar
+  const tpct = player.thirst / 100;
+  const thirstCritical = player.thirst < 15;
+  const thirstFlash = thirstCritical && Math.floor(Date.now() / 400) % 2 === 0;
   ctx.fillStyle = '#1a1a2e';
   ctx.fillRect(18, 52, 170, 11);
-  const tpct = player.thirst / 100;
-  ctx.fillStyle = tpct > 0.4 ? '#00e6ff' : tpct > 0.2 ? '#ffd700' : '#e94560';
+  ctx.fillStyle = thirstFlash ? '#ff4400'
+                : tpct > 0.4  ? '#00e6ff'
+                : tpct > 0.2  ? '#ffd700'
+                :               '#e94560';
   ctx.fillRect(18, 52, Math.max(0, tpct * 170), 11);
-  ctx.strokeStyle = '#333';
+  ctx.strokeStyle = thirstFlash ? '#ff8800' : '#333';
+  ctx.lineWidth = thirstFlash ? 2 : 1;
   ctx.strokeRect(18, 52, 170, 11);
+  ctx.lineWidth = 1;
   ctx.fillStyle = '#fff';
   ctx.fillText(`H₂O  ${Math.ceil(player.thirst).toString().padStart(3)}%`, 192, 62);
+
+  // Critical warning messages
+  if (hungerCritical || thirstCritical) {
+    const warnFlash = Math.floor(Date.now() / 600) % 2 === 0;
+    if (warnFlash) {
+      ctx.save();
+      ctx.font = 'bold 11px monospace';
+      ctx.textAlign = 'center';
+      let warnY = 95;
+      if (hungerCritical) {
+        ctx.fillStyle = '#ff6600';
+        ctx.fillText('⚠ CRITICAL: need food!', GAME_W / 2, warnY);
+        warnY += 16;
+      }
+      if (thirstCritical) {
+        ctx.fillStyle = '#ff6600';
+        ctx.fillText('⚠ CRITICAL: find water!', GAME_W / 2, warnY);
+      }
+      ctx.textAlign = 'left';
+      ctx.restore();
+    }
+  }
 
   // Stats row
   ctx.fillStyle = '#8888aa';
@@ -999,7 +1033,7 @@ function resetGame() {
   dialogue     = null;
   dlgChoice    = 0;
   worldEdge    = 0;
-  nextCrateX   = 300 + Math.random() * 200;
+  nextCrateX   = 250 + Math.random() * 150;
   nextNpcX     = 800 + Math.random() * 400;
   generateWorld(0);
 }
