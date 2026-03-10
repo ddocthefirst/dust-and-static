@@ -8,6 +8,11 @@ signal stats_changed(hunger: float, thirst: float, stamina: float, health: float
 @export var stamina: float = 100.0
 @export var health: float = 100.0
 
+# Difficulty scaling (set by World each stage transition)
+@export var difficulty_stage: int = 1
+@export var decay_multiplier: float = 1.0
+var score_multiplier: float = 1.0
+
 const WALK_SPEED: float = 160.0
 const RUN_SPEED: float = 280.0
 const JUMP_VELOCITY: float = -520.0
@@ -94,9 +99,9 @@ func _process(delta: float) -> void:
 	if is_dead:
 		return
 
-	# Stat decay
-	hunger = max(0.0, hunger - HUNGER_DECAY * delta)
-	thirst = max(0.0, thirst - THIRST_DECAY * delta)
+	# Stat decay — scaled by current difficulty multiplier
+	hunger = max(0.0, hunger - HUNGER_DECAY * decay_multiplier * delta)
+	thirst = max(0.0, thirst - THIRST_DECAY * decay_multiplier * delta)
 
 	# Death check
 	if hunger <= 0.0 or thirst <= 0.0:

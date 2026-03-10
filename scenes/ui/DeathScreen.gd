@@ -4,6 +4,7 @@ var overlay: ColorRect
 var died_label: Label
 var time_label: Label
 var distance_label: Label
+var score_label: Label
 var restart_label: Label
 var is_showing: bool = false
 
@@ -48,11 +49,21 @@ func _build_ui() -> void:
 	distance_label.add_theme_font_size_override("font_size", 22)
 	add_child(distance_label)
 
+	# Final score (prominent)
+	score_label = Label.new()
+	score_label.text = "FINAL SCORE: 0"
+	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	score_label.position = Vector2(0, 420)
+	score_label.size = Vector2(1280, 40)
+	score_label.add_theme_color_override("font_color", Color("#ffffff"))
+	score_label.add_theme_font_size_override("font_size", 28)
+	add_child(score_label)
+
 	# Restart prompt
 	restart_label = Label.new()
 	restart_label.text = "PRESS R TO RESTART"
 	restart_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	restart_label.position = Vector2(0, 460)
+	restart_label.position = Vector2(0, 476)
 	restart_label.size = Vector2(1280, 36)
 	restart_label.add_theme_color_override("font_color", Color("#ffd700"))
 	restart_label.add_theme_font_size_override("font_size", 20)
@@ -63,17 +74,19 @@ func _build_ui() -> void:
 	tween.tween_property(restart_label, "modulate:a", 0.2, 0.7)
 	tween.tween_property(restart_label, "modulate:a", 1.0, 0.7)
 
-func show_screen(time_survived: float, distance: float) -> void:
+func show_screen(time_survived: float, distance: float, final_score: float = 0.0) -> void:
 	is_showing = true
 	var mins := int(time_survived) / 60
 	var secs := int(time_survived) % 60
 	time_label.text = "Time Survived: %d:%02d" % [mins, secs]
 	distance_label.text = "Distance Travelled: %.0fm" % distance
+	score_label.text = "FINAL SCORE: %d" % int(final_score)
 
 	overlay.visible = true
 	died_label.visible = true
 	time_label.visible = true
 	distance_label.visible = true
+	score_label.visible = true
 	restart_label.visible = true
 
 	# Fade in
@@ -87,6 +100,7 @@ func hide_screen() -> void:
 	died_label.visible = false
 	time_label.visible = false
 	distance_label.visible = false
+	score_label.visible = false
 	restart_label.visible = false
 
 func _input(event: InputEvent) -> void:

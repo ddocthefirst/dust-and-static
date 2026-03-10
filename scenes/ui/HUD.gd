@@ -9,6 +9,8 @@ var stamina_fill: ColorRect
 var distance_label: Label
 var time_label: Label
 var prompt_label: Label
+var stage_label: Label
+var score_label: Label
 
 const BAR_WIDTH: float = 160.0
 const BAR_HEIGHT: float = 14.0
@@ -81,6 +83,26 @@ func _build_top_right_labels() -> void:
 	time_label.add_theme_font_size_override("font_size", 12)
 	add_child(time_label)
 
+	# Score display
+	score_label = Label.new()
+	score_label.text = "SCORE: 0"
+	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	score_label.position = Vector2(1280 - 200, 62)
+	score_label.size = Vector2(184, 26)
+	score_label.add_theme_color_override("font_color", Color("#ffffff"))
+	score_label.add_theme_font_size_override("font_size", 16)
+	add_child(score_label)
+
+	# Stage label (color-coded, updates on stage change)
+	stage_label = Label.new()
+	stage_label.text = "STAGE 1 — CALM"
+	stage_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	stage_label.position = Vector2(1280 - 200, 90)
+	stage_label.size = Vector2(184, 22)
+	stage_label.add_theme_color_override("font_color", Color("#00ff88"))
+	stage_label.add_theme_font_size_override("font_size", 13)
+	add_child(stage_label)
+
 func _build_prompt_label() -> void:
 	prompt_label = Label.new()
 	prompt_label.text = ""
@@ -104,6 +126,19 @@ func update_time(seconds: float) -> void:
 	var mins := int(seconds) / 60
 	var secs := int(seconds) % 60
 	time_label.text = "%d:%02d" % [mins, secs]
+
+func update_score(s: float) -> void:
+	score_label.text = "SCORE: %d" % int(s)
+
+func update_stage(stage: int, stage_name: String, stage_color: Color) -> void:
+	stage_label.text = "STAGE %d — %s" % [stage, stage_name]
+	stage_label.add_theme_color_override("font_color", stage_color)
+	# Flash the stage label briefly
+	var tween := create_tween()
+	tween.tween_property(stage_label, "modulate:a", 0.1, 0.0)
+	tween.tween_property(stage_label, "modulate:a", 1.0, 0.4)
+	tween.tween_property(stage_label, "modulate:a", 0.3, 0.2)
+	tween.tween_property(stage_label, "modulate:a", 1.0, 0.3)
 
 func show_prompt(text: String) -> void:
 	prompt_label.text = text

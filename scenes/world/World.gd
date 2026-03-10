@@ -3,6 +3,25 @@ extends Node2D
 const SupplyCrateScene := preload("res://scenes/world/SupplyCrate.tscn")
 const SurvivorScene := preload("res://scenes/npcs/Survivor.tscn")
 
+# ── Difficulty stage config ────────────────────────────────────────────────
+# Each entry: [decay_mult, score_mult, crate_gap_min, crate_gap_max, bg_scroll_mult]
+const STAGE_DATA := {
+	1: { "name": "CALM",   "color": Color("#00ff88"), "decay_mult": 1.0, "score_mult": 1.0,
+	     "crate_gap_min": 250, "crate_gap_max": 400,  "scroll_mult": 1.0 },
+	2: { "name": "TENSE",  "color": Color("#ffd700"), "decay_mult": 1.5, "score_mult": 2.0,
+	     "crate_gap_min": 350, "crate_gap_max": 550,  "scroll_mult": 1.2 },
+	3: { "name": "HARSH",  "color": Color("#ff8800"), "decay_mult": 2.2, "score_mult": 3.5,
+	     "crate_gap_min": 500, "crate_gap_max": 750,  "scroll_mult": 1.5 },
+	4: { "name": "BRUTAL", "color": Color("#ff2640"), "decay_mult": 3.5, "score_mult": 6.0,
+	     "crate_gap_min": 700, "crate_gap_max": 1000, "scroll_mult": 2.0 },
+}
+
+func _get_stage(t: float) -> int:
+	if t < 60.0:  return 1
+	if t < 180.0: return 2
+	if t < 360.0: return 3
+	return 4
+
 var player: CharacterBody2D
 var hud: CanvasLayer
 var dialogue_box: CanvasLayer
@@ -20,9 +39,11 @@ var platforms: Array = []
 var crates: Array = []
 var survivors: Array = []
 
-# Stats
+# Stats / difficulty
 var time_survived: float = 0.0
 var game_over: bool = false
+var difficulty_stage: int = 1
+var score: float = 0.0
 
 # Hostile block timer
 var block_timer: float = 0.0
@@ -91,12 +112,27 @@ func _physics_process(delta: float) -> void:
 
 	time_survived += delta
 
+	# ── Difficulty stage update ──────────────────────────────────────────
+	var new_stage := _get_stage(time_survived)
+	if new_stage != difficulty_stage:
+		difficulty_stage = new_stage
+		_apply_stage(difficulty_stage)
+
 	if player_blocked:
 		block_timer -= delta
 		if block_timer <= 0.0:
 			player_blocked = false
 			if player:
 				player.is_dead = false  # re-enable movement
+
+func _apply_stage(stage: int) -> void:
+	var cfg: Dictionary = STAGE_DATA[stage]
+	if player:
+		player.difficulty_stage   = stage
+		player.decay_multiplier   = cfg["decay_mult"]
+		player.score_multiplier   = cfg["score_mult"]
+	if hud:
+		hud.update_stage(stage, cfg["name"], cfg["color"])
 
 func _process(delta: float) -> void:
 	if game_over or not player:
@@ -120,10 +156,11 @@ func _process(delta: float) -> void:
 		_spawn_platform(next_platform_x)
 		next_platform_x += randi_range(200, 400)
 
-	# Spawn crates
+	# Spawn crates (gap widens each stage)
+	var cfg: Dictionary = STAGE_DATA[difficulty_stage]
 	while next_crate_x < px + 1000.0:
 		_spawn_crate(next_crate_x)
-		next_crate_x += randi_range(400, 800)
+		next_crate_x += randi_range(cfg["crate_gap_min"], cfg["crate_gap_max"])
 
 	# Spawn survivors
 	while next_survivor_x < px + 1000.0:
@@ -133,10 +170,16 @@ func _process(delta: float) -> void:
 	# Despawn old objects
 	_despawn_old(px)
 
+	# Score: (distance×0.1 + time×0.5) × score_multiplier
+	var dist := player.get_distance()
+	var smult := STAGE_DATA[difficulty_stage]["score_mult"]
+	score = (dist * 0.1 + time_survived * 0.5) * smult
+
 	# Update HUD
 	if hud:
-		hud.update_distance(player.get_distance())
+		hud.update_distance(dist)
 		hud.update_time(time_survived)
+		hud.update_score(score)
 
 func _generate_ground(from_x: float, to_x: float) -> void:
 	var platform := _create_platform(
@@ -270,7 +313,7 @@ func _on_player_died() -> void:
 	game_over = true
 	if death_screen:
 		var dist: float = player.get_distance() if player else 0.0
-		death_screen.show_screen(time_survived, dist)
+		death_screen.show_screen(time_survived, dist, score)
 
 func _despawn_old(player_x: float) -> void:
 	var cutoff := player_x - DESPAWN_DIST
