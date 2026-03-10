@@ -1,1125 +1,531 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dust &amp; Static — Post-Apocalyptic Survival</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
+  <title>Dust &amp; Static</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: #000;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
+    html, body {
+      margin: 0; padding: 0;
+      background: #0a0a14;
       overflow: hidden;
-      font-family: 'Courier New', monospace;
-    }
-    #gameWrapper {
-      position: relative;
+      width: 100%; height: 100%;
     }
     canvas {
       display: block;
       image-rendering: pixelated;
-      image-rendering: crisp-edges;
+      position: absolute;
     }
   </style>
 </head>
 <body>
-<div id="gameWrapper">
-  <canvas id="game"></canvas>
-</div>
+<canvas id="canvas"></canvas>
 <script>
-// ─── CONSTANTS ────────────────────────────────────────────────────────────────
-const GAME_W = 800;
-const GAME_H = 450;
-const GROUND_Y = 370;
-const GRAVITY = 0.55;
-const JUMP_VY = -13;
-const PLAYER_SPEED = 4.2;
-const HUNGER_DECAY = 0.2 / 60;     // per frame at 60fps (reduced from 0.4)
-const THIRST_DECAY = 0.25 / 60;    // per frame at 60fps (reduced from 0.6)
-const GRACE_PERIOD = 20;           // seconds before decay starts
+// ─────────────────────────────────────────────
+//  DUST & STATIC  –  canvas prototype
+//  Progressive difficulty staging + score system
+// ─────────────────────────────────────────────
 
-// ─── CANVAS SETUP ────────────────────────────────────────────────────────────
-const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
-canvas.width = GAME_W;
-canvas.height = GAME_H;
+const W = 1280, H = 720;
+const GROUND_Y = 530;      // top of ground surface
+
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+canvas.width  = W;
+canvas.height = H;
 
 function resize() {
-  const scale = Math.min(window.innerWidth / GAME_W, window.innerHeight / GAME_H);
-  canvas.style.width  = Math.floor(GAME_W * scale) + 'px';
-  canvas.style.height = Math.floor(GAME_H * scale) + 'px';
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.style.width  = (W * s) + 'px';
+  canvas.style.height = (H * s) + 'px';
+  canvas.style.left   = ((window.innerWidth  - W * s) / 2) + 'px';
+  canvas.style.top    = ((window.innerHeight - H * s) / 2) + 'px';
 }
-window.addEventListener('resize', resize);
 resize();
+window.addEventListener('resize', resize);
 
-// ─── INPUT ────────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════
+//  DIFFICULTY
+// ══════════════════════════════════════════════
+const STAGE_CONFIG = {
+  1: { name: 'CALM',   color: '#00ff88', decayMult: 1.0, scoreMult: 1,   crateGapMin: 250, crateGapMax: 400,  scrollMult: 1.0  },
+  2: { name: 'TENSE',  color: '#ffd700', decayMult: 1.5, scoreMult: 2,   crateGapMin: 350, crateGapMax: 550,  scrollMult: 1.2  },
+  3: { name: 'HARSH',  color: '#ff8800', decayMult: 2.2, scoreMult: 3.5, crateGapMin: 500, crateGapMax: 750,  scrollMult: 1.5  },
+  4: { name: 'BRUTAL', color: '#ff2640', decayMult: 3.5, scoreMult: 6,   crateGapMin: 700, crateGapMax: 1000, scrollMult: 2.0  },
+};
+
+function getDifficultyStage(t) {
+  if (t < 60)  return 1;
+  if (t < 180) return 2;
+  if (t < 360) return 3;
+  return 4;
+}
+function getDecayMult(stage)  { return STAGE_CONFIG[stage].decayMult; }
+function getScoreMult(stage)  { return STAGE_CONFIG[stage].scoreMult; }
+
+// ══════════════════════════════════════════════
+//  INPUT
+// ══════════════════════════════════════════════
 const keys = {};
-window.addEventListener('keydown', e => {
-  keys[e.code] = true;
-  if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) {
-    e.preventDefault();
-  }
-  handleKeyDown(e.code);
-});
-window.addEventListener('keyup', e => { keys[e.code] = false; });
+window.addEventListener('keydown', e => { keys[e.code] = true;  e.preventDefault && ['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code) && e.preventDefault(); });
+window.addEventListener('keyup',   e => { keys[e.code] = false; });
 
-// ─── VIRTUAL / TOUCH INPUT ────────────────────────────────────────────────────
-// Continuous virtual directional state
-const vkeys = { left: false, right: false };
+// ══════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════
+function rand(a, b)    { return Math.random() * (b - a) + a; }
+function randInt(a, b) { return Math.floor(rand(a, b + 1)); }
 
-// D-pad button definitions in canvas-space coords
-const BTNS = {
-  left:     { x: 12,          y: 382, w: 62, h: 58, label: '←', pressed: false },
-  right:    { x: 82,          y: 382, w: 62, h: 58, label: '→', pressed: false },
-  jump:     { x: GAME_W - 74, y: 382, w: 62, h: 58, label: '↑', pressed: false },
-  interact: { x: GAME_W - 74, y: 315, w: 62, h: 58, label: 'E', pressed: false },
-};
+// ══════════════════════════════════════════════
+//  GAME STATE
+// ══════════════════════════════════════════════
+let state;          // 'playing' | 'dead'
+let worldTime, difficultyStage, score;
+let cameraX;
+let player;
+let platforms, crates;
+let nextPlatformX, nextCrateX;
+let worldRightEdge;
+let stageFlash;     // { text, color, timer }
+let bgRuins;
 
-// Active pointer tracking: pointerId → action string
-const activePointers = new Map();
+const HUNGER_DECAY_BASE = 1.0;
+const THIRST_DECAY_BASE = 1.5;
 
-// Dialogue choice hit rects — populated each frame during drawDialogue()
-let dlgChoiceRects = [];
+function initGame() {
+  state          = 'playing';
+  worldTime      = 0;
+  difficultyStage = 1;
+  score          = 0;
+  cameraX        = 0;
 
-function canvasPoint(clientX, clientY) {
-  const r = canvas.getBoundingClientRect();
-  return {
-    x: (clientX - r.left) * (GAME_W / r.width),
-    y: (clientY - r.top)  * (GAME_H / r.height),
-  };
-}
-
-function hitBtn(gx, gy) {
-  for (const [name, b] of Object.entries(BTNS)) {
-    if (gx >= b.x && gx <= b.x + b.w && gy >= b.y && gy <= b.y + b.h) return name;
-  }
-  return null;
-}
-
-function zoneAction(gx, gy) {
-  // Top quarter → jump zone
-  if (gy < GAME_H * 0.25) return 'jump';
-  // Bottom half → left/right zones
-  if (gy > GAME_H * 0.5) return gx < GAME_W / 2 ? 'left' : 'right';
-  return null;
-}
-
-function releaseAction(action) {
-  const others = [...activePointers.values()];
-  if (action === 'left')  {
-    if (!others.some(a => a === 'left'))  { vkeys.left = false; BTNS.left.pressed = false; }
-  } else if (action === 'right') {
-    if (!others.some(a => a === 'right')) { vkeys.right = false; BTNS.right.pressed = false; }
-  } else if (action === 'jump')     { BTNS.jump.pressed = false; }
-  else if (action === 'interact') { BTNS.interact.pressed = false; }
-}
-
-canvas.addEventListener('pointerdown', e => {
-  e.preventDefault();
-  canvas.setPointerCapture(e.pointerId);
-  const { x, y } = canvasPoint(e.clientX, e.clientY);
-
-  // Title screen — any tap starts the game
-  if (titleActive) { titleActive = false; state = 'playing'; worldTime = 0; return; }
-
-  // Death screen — any tap restarts
-  if (state === 'dead') { resetGame(); return; }
-
-  // Dialogue — tap a choice to select; tap selected choice to confirm
-  if (state === 'dialogue') {
-    for (let i = 0; i < dlgChoiceRects.length; i++) {
-      const r = dlgChoiceRects[i];
-      if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-        if (dlgChoice === i) {
-          // Second tap on same choice confirms it
-          dialogue.choices[dlgChoice].action();
-          dialogue = null; dlgChoice = 0; state = 'playing';
-        } else {
-          dlgChoice = i;
-        }
-        return;
-      }
-    }
-    return;
-  }
-
-  // Playing — D-pad buttons take priority
-  const btn = hitBtn(x, y);
-  if (btn) {
-    BTNS[btn].pressed = true;
-    activePointers.set(e.pointerId, btn);
-    if (btn === 'left')     { vkeys.left = true; }
-    if (btn === 'right')    { vkeys.right = true; }
-    if (btn === 'jump')     { if (player.onGround) player.vy = JUMP_VY; }
-    if (btn === 'interact') { tryInteract(); }
-    return;
-  }
-
-  // Canvas zone taps
-  const zone = zoneAction(x, y);
-  if (zone) {
-    activePointers.set(e.pointerId, zone);
-    if (zone === 'left')  { vkeys.left = true; }
-    if (zone === 'right') { vkeys.right = true; }
-    if (zone === 'jump')  { if (player.onGround) player.vy = JUMP_VY; }
-  }
-}, { passive: false });
-
-canvas.addEventListener('pointerup', e => {
-  const action = activePointers.get(e.pointerId);
-  activePointers.delete(e.pointerId);
-  if (action) releaseAction(action);
-});
-
-canvas.addEventListener('pointercancel', e => {
-  const action = activePointers.get(e.pointerId);
-  activePointers.delete(e.pointerId);
-  if (action) releaseAction(action);
-});
-
-// ─── GAME STATE ───────────────────────────────────────────────────────────────
-let state = 'playing'; // 'playing' | 'dialogue' | 'dead'
-let worldTime = 0;
-let camera = { x: 0, targetX: 0 };
-
-// World containers
-let platforms = [];
-let crates    = [];
-let npcs      = [];
-let floatTexts = [];
-
-// World generation cursors
-let worldEdge  = 0;  // how far we've generated
-let nextCrateX = 400 + Math.random() * 400;
-let nextNpcX   = 800 + Math.random() * 400;
-
-// ─── PLAYER ───────────────────────────────────────────────────────────────────
-let player = makePlayer();
-function makePlayer() {
-  return {
-    x: 100, y: GROUND_Y - 36,
-    w: 18,  h: 36,
-    vx: 0,  vy: 0,
+  player = {
+    x: 200, y: GROUND_Y,
+    w: 22,  h: 56,
+    vx: 0, vy: 0,
     onGround: false,
-    bobPhase: 0,
-    bobY: 0,
-    facing: 1,
-    hunger: 100,
-    thirst: 100,
-    maxDist: 0,
-    deathCause: '',
+    hunger:  100,
+    thirst:  100,
+    stamina: 100,
+    health:  100,
+    startX:  200,
+    bobTimer: 0,
+    dead:    false,
   };
-}
 
-// ─── DIALOGUE ─────────────────────────────────────────────────────────────────
-let dialogue = null;   // { text, choices:[{text,action}] }
-let dlgChoice = 0;
+  platforms      = [];
+  crates         = [];
+  worldRightEdge = 0;
+  nextPlatformX  = 500;
 
-const DIALOGUE_SCRIPTS = {
-  Merchant(npc) {
-    return {
-      speaker: npc.name + ' — Merchant',
-      text: '"Supplies are scarce out here. I can make a trade… if the price is right."',
-      choices: [
-        { text: 'Trade food for water (+35 water, -15 food)',
-          action() { player.hunger = Math.max(0, player.hunger - 15);
-                     player.thirst = Math.min(100, player.thirst + 35); } },
-        { text: 'Trade water for food (-15 water, +35 food)',
-          action() { player.thirst = Math.max(0, player.thirst - 15);
-                     player.hunger = Math.min(100, player.hunger + 35); } },
-        { text: 'Walk away', action() {} },
-      ],
-    };
-  },
-  Wanderer(npc) {
-    return {
-      speaker: npc.name + ' — Wanderer',
-      text: `"I've been walking for days. Found more than I can carry — take some."`,
-      choices: [
-        { text: 'Take stash (+30 food, +20 water)',
-          action() { player.hunger = Math.min(100, player.hunger + 30);
-                     player.thirst = Math.min(100, player.thirst + 20); } },
-        { text: 'Decline — keep moving', action() {} },
-      ],
-    };
-  },
-  Hostile(npc) {
-    return {
-      speaker: npc.name + ' — Hostile',
-      text: '"Your supplies or your life. I\'ve killed for less. Don\'t test me."',
-      choices: [
-        { text: 'Hand over food (-10 food)',
-          action() { player.hunger = Math.max(0, player.hunger - 10); } },
-        { text: 'Hand over water (-10 water)',
-          action() { player.thirst = Math.max(0, player.thirst - 10); } },
-        { text: '▶ Sprint away!',
-          action() { player.vx = player.facing * 10; } },
-      ],
-    };
-  },
-};
+  ensureGround(3000);
+  nextCrateX = player.x + rand(STAGE_CONFIG[1].crateGapMin, STAGE_CONFIG[1].crateGapMax);
 
-// ─── WORLD GENERATION ─────────────────────────────────────────────────────────
-const NAMES = {
-  Merchant: ['Carla', 'Ruiz', 'Mika', 'Dex', 'Yeva'],
-  Wanderer: ['Ghost', 'Ray', 'Ash', 'Crow', 'Finn'],
-  Hostile:  ['Scar', 'Gravel', 'Rust', 'Fang', 'Brix'],
-};
-const NPC_COLORS = { Merchant: '#9b59b6', Wanderer: '#27ae60', Hostile: '#c0392b' };
+  stageFlash = null;
 
-function pickName(type) {
-  const arr = NAMES[type];
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-function generateWorld(upToX) {
-  // Generate in 200px chunks
-  while (worldEdge < upToX + GAME_W * 2) {
-    const ex = worldEdge;
-
-    // Random raised platforms
-    if (Math.random() < 0.45) {
-      const pw = 80 + Math.random() * 130;
-      const py = GROUND_Y - 70 - Math.random() * 90;
-      platforms.push({ x: ex + 30 + Math.random() * 60, y: py, w: pw, h: 14 });
-    }
-
-    worldEdge += 200;
-  }
-
-  // Crates
-  while (nextCrateX < upToX + GAME_W * 2) {
-    crates.push({
-      x: nextCrateX,
-      y: GROUND_Y - 28,
-      w: 26, h: 26,
-      collected: false,
-      glow: Math.random() * Math.PI * 2,
+  // Procedural distant ruins for parallax
+  bgRuins = [];
+  for (let i = 0; i < 160; i++) {
+    bgRuins.push({
+      x:     i * 130 - 600,
+      baseY: GROUND_Y,
+      w:     rand(18, 65),
+      h:     rand(35, 170),
+      layer: rand(0.08, 0.4),
     });
-    nextCrateX += 250 + Math.random() * 150;
-  }
-
-  // NPCs
-  while (nextNpcX < upToX + GAME_W * 2) {
-    const types = ['Merchant', 'Wanderer', 'Hostile'];
-    const type = types[Math.floor(Math.random() * types.length)];
-    npcs.push({
-      x: nextNpcX,
-      y: GROUND_Y - 38,
-      w: 16, h: 38,
-      type, name: pickName(type),
-      talked: false,
-      bob: Math.random() * Math.PI * 2,
-      color: NPC_COLORS[type],
-    });
-    nextNpcX += 800 + Math.random() * 400;
   }
 }
 
-generateWorld(0);
-
-// Cull entities too far behind camera
-function cullWorld() {
-  const cullX = camera.x - GAME_W;
-  platforms = platforms.filter(p => p.x + p.w > cullX);
-  crates    = crates.filter(c => c.x + c.w > cullX || c.collected);
-  npcs      = npcs.filter(n => n.x + n.w > cullX);
-  // Remove collected crates that are far behind
-  crates    = crates.filter(c => !c.collected || c.x > cullX);
-}
-
-// ─── PHYSICS HELPERS ──────────────────────────────────────────────────────────
-function resolveCollisions(ent) {
-  let grounded = false;
-
-  // Ground
-  if (ent.y + ent.h >= GROUND_Y) {
-    ent.y = GROUND_Y - ent.h;
-    ent.vy = 0;
-    grounded = true;
-  }
-
-  // Platforms (only from above)
-  for (const p of platforms) {
-    if (ent.x + ent.w > p.x && ent.x < p.x + p.w) {
-      const prevBottom = ent.y + ent.h - ent.vy;
-      if (prevBottom <= p.y + 2 && ent.y + ent.h >= p.y && ent.vy >= 0) {
-        ent.y = p.y - ent.h;
-        ent.vy = 0;
-        grounded = true;
-      }
-    }
-  }
-
-  return grounded;
-}
-
-// ─── INTERACTION ──────────────────────────────────────────────────────────────
-function tryInteract() {
-  const px = player.x + player.w / 2;
-  const py = player.y + player.h / 2;
-
-  // Crates first
-  for (const c of crates) {
-    if (c.collected) continue;
-    const cx = c.x + c.w / 2;
-    const cy = c.y + c.h / 2;
-    if (Math.abs(cx - px) < 60 && Math.abs(cy - py) < 60) {
-      c.collected = true;
-      const r = Math.random();
-      let msg;
-      if (r < 0.35) {
-        const foodAmt = 35 + Math.floor(Math.random() * 21); // +35 to +55
-        player.hunger = Math.min(100, player.hunger + foodAmt);
-        msg = `+FOOD +${foodAmt}`;
-      } else if (r < 0.70) {
-        const waterAmt = 40 + Math.floor(Math.random() * 21); // +40 to +60
-        player.thirst = Math.min(100, player.thirst + waterAmt);
-        msg = `+WATER +${waterAmt}`;
-      } else {
-        const medAmt = 30 + Math.floor(Math.random() * 21); // +30 to +50
-        player.hunger = Math.min(100, player.hunger + medAmt);
-        player.thirst = Math.min(100, player.thirst + medAmt);
-        msg = `+MED +${medAmt}`;
-      }
-      floatTexts.push({ x: c.x + c.w / 2, y: c.y - 4, text: msg, life: 1 });
-      return;
-    }
-  }
-
-  // NPCs
-  for (const n of npcs) {
-    if (n.talked) continue;
-    const nx = n.x + n.w / 2;
-    const ny = n.y + n.h / 2;
-    if (Math.abs(nx - px) < 80 && Math.abs(ny - py) < 80) {
-      n.talked = true;
-      dialogue = DIALOGUE_SCRIPTS[n.type](n);
-      dlgChoice = 0;
-      state = 'dialogue';
-      return;
-    }
+// ══════════════════════════════════════════════
+//  WORLD GENERATION
+// ══════════════════════════════════════════════
+function ensureGround(toX) {
+  const SEG = 700;
+  while (worldRightEdge < toX) {
+    platforms.push({ x: worldRightEdge, y: GROUND_Y, w: SEG + 4, h: 45, isGround: true });
+    worldRightEdge += SEG;
   }
 }
 
-// ─── KEY HANDLER ──────────────────────────────────────────────────────────────
-function handleKeyDown(code) {
-  if (state === 'dead') {
-    if (code === 'KeyR') resetGame();
-    return;
-  }
-
-  if (state === 'dialogue') {
-    if (code === 'ArrowUp' || code === 'KeyW') {
-      dlgChoice = Math.max(0, dlgChoice - 1);
-    } else if (code === 'ArrowDown' || code === 'KeyS') {
-      dlgChoice = Math.min(dialogue.choices.length - 1, dlgChoice + 1);
-    } else if (code === 'KeyE' || code === 'Enter' || code === 'Space') {
-      dialogue.choices[dlgChoice].action();
-      dialogue = null;
-      dlgChoice = 0;
-      state = 'playing';
-    }
-    return;
-  }
-
-  // Playing
-  if (code === 'Space' || code === 'ArrowUp' || code === 'KeyW') {
-    if (player.onGround) player.vy = JUMP_VY;
-  }
-  if (code === 'KeyE') tryInteract();
+function spawnPlatform(cx) {
+  const w = rand(80, 200);
+  const y = GROUND_Y - rand(80, 210);
+  platforms.push({ x: cx - w / 2, y, w, h: 18, isGround: false });
 }
 
-// ─── UPDATE ───────────────────────────────────────────────────────────────────
-let lastTs = 0;
+function spawnCrate(cx, cfg) {
+  const types = ['food', 'water', 'medicine', 'fuel'];
+  crates.push({
+    x: cx - 16, y: GROUND_Y - 32,
+    w: 32,      h: 32,
+    type:      types[randInt(0, types.length - 1)],
+    collected: false,
+    label:     '',
+    labelTimer: 0,
+    labelY:    0,
+  });
+}
 
+// ══════════════════════════════════════════════
+//  UPDATE
+// ══════════════════════════════════════════════
 function update(dt) {
   if (state !== 'playing') return;
 
   worldTime += dt;
 
-  // Horizontal movement (keyboard + virtual touch keys)
-  let moving = false;
-  if (keys['ArrowLeft'] || keys['KeyA'] || vkeys.left) {
-    player.vx = -PLAYER_SPEED;
-    player.facing = -1;
-    moving = true;
-  } else if (keys['ArrowRight'] || keys['KeyD'] || vkeys.right) {
-    player.vx = PLAYER_SPEED;
-    player.facing = 1;
-    moving = true;
+  // ── Difficulty stage ──
+  const newStage = getDifficultyStage(worldTime);
+  if (newStage !== difficultyStage) {
+    difficultyStage = newStage;
+    const c = STAGE_CONFIG[newStage];
+    stageFlash = { text: `STAGE ${newStage} — ${c.name}`, color: c.color, timer: 2.0 };
+  }
+  const cfg       = STAGE_CONFIG[difficultyStage];
+  const decayMult = getDecayMult(difficultyStage);
+  const scoreMult = getScoreMult(difficultyStage);
+
+  // ── Player physics ──
+  const GRAVITY    = 980;
+  const WALK_SPEED = 160;
+  const RUN_SPEED  = 280;
+  const JUMP_VEL   = -520;
+
+  const wantRun = (keys['ShiftLeft'] || keys['ShiftRight']) && player.stamina > 0;
+  const speed   = wantRun ? RUN_SPEED : WALK_SPEED;
+  let dir = 0;
+  if (keys['ArrowLeft']  || keys['KeyA']) dir = -1;
+  if (keys['ArrowRight'] || keys['KeyD']) dir =  1;
+
+  if (dir !== 0) {
+    player.vx = dir * speed;
   } else {
-    player.vx *= 0.75;
+    player.vx = player.vx * Math.pow(0.002, dt);   // friction
   }
 
-  // Jump (held is fine; only triggers on keydown)
-  player.vy += GRAVITY;
-
-  player.x += player.vx;
-  player.y += player.vy;
-
-  // Left boundary
-  if (player.x < 30) { player.x = 30; player.vx = 0; }
-
-  player.onGround = resolveCollisions(player);
-
-  // Walk bob
-  if (player.onGround && moving) {
-    player.bobPhase += 0.22;
-    player.bobY = Math.sin(player.bobPhase) * 2.5;
+  // Stamina
+  if (wantRun && dir !== 0) {
+    player.stamina = Math.max(0, player.stamina - 30 * dt);
   } else {
-    player.bobY *= 0.85;
+    player.stamina = Math.min(100, player.stamina + 20 * dt);
   }
 
-  // Distance
-  player.maxDist = Math.max(player.maxDist, Math.floor(player.x - 130));
+  // Gravity
+  if (!player.onGround) player.vy += GRAVITY * dt;
 
-  // Camera
-  camera.targetX = player.x - GAME_W * 0.32;
-  if (camera.targetX < 0) camera.targetX = 0;
-  camera.x += (camera.targetX - camera.x) * 0.12;
-
-  // World gen + cull
-  generateWorld(camera.x + GAME_W);
-  cullWorld();
-
-  // Stat decay (grace period for first 10 seconds)
-  if (worldTime > GRACE_PERIOD) {
-    player.hunger = Math.max(0, player.hunger - HUNGER_DECAY * dt * 60);
-    player.thirst = Math.max(0, player.thirst - THIRST_DECAY * dt * 60);
+  // Jump
+  if ((keys['Space'] || keys['ArrowUp'] || keys['KeyW']) && player.onGround) {
+    player.vy = JUMP_VEL;
+    player.onGround = false;
   }
 
-  // Death
-  if (player.hunger <= 0 || player.thirst <= 0) {
-    player.deathCause = player.hunger <= 0 ? 'Starvation' : 'Dehydration';
-    state = 'dead';
-  }
+  // Move
+  player.x += player.vx * dt;
+  player.y += player.vy * dt;
+  if (player.x < 20) { player.x = 20; player.vx = 0; }
 
-  // Float texts
-  for (let i = floatTexts.length - 1; i >= 0; i--) {
-    floatTexts[i].y -= 0.8;
-    floatTexts[i].life -= 0.018;
-    if (floatTexts[i].life <= 0) floatTexts.splice(i, 1);
-  }
-}
+  // ── Platform collision ──
+  player.onGround = false;
+  const foot = player.y;
 
-// ─── PARALLAX LAYERS ──────────────────────────────────────────────────────────
-// Precomputed building/ruin shapes as [x, y, w, h] within a 800px tile
-const CITY_BUILDINGS = [
-  [0,  180, 55, 190], [50, 120, 75, 250], [118, 150, 48, 220],
-  [158, 90,  65, 280], [216, 135, 85, 235], [293, 72, 58, 298],
-  [342, 115, 76, 255], [408, 95, 52, 275], [452, 148, 68, 222],
-  [510, 78, 60, 292], [562, 108, 82, 262], [634, 140, 57, 230],
-  [682, 88, 72, 282], [746, 118, 88, 252],
-];
-const RUIN_SHAPES = [
-  [10,210,38,160], [58,225,28,145], [96,188,46,172], [168,215,33,155],
-  [212,194,42,166], [265,220,38,150], [315,180,52,180], [385,210,29,160],
-  [426,190,47,170], [485,225,38,145], [536,198,43,162], [598,214,33,156],
-  [642,185,56,175], [716,205,38,165], [766,220,48,150],
-];
-const RUBBLE_SHAPES = [
-  [15,348,32,22],[65,356,18,16],[115,342,38,26],[198,350,24,20],
-  [255,338,33,28],[338,352,19,20],[395,346,42,24],[475,352,23,22],
-  [535,341,28,30],[618,355,32,20],[675,346,19,26],[738,352,38,22],
-];
-
-function drawParallaxLayer(shapes, color, parallaxFactor, tileW) {
-  ctx.fillStyle = color;
-  const offset = (camera.x * parallaxFactor) % tileW;
-  const startTile = -1;
-  const endTile   = Math.ceil(GAME_W / tileW) + 1;
-  for (let t = startTile; t <= endTile; t++) {
-    const ox = t * tileW - offset;
-    for (const [sx, sy, sw, sh] of shapes) {
-      ctx.fillRect(ox + sx, sy, sw, sh);
+  for (const p of platforms) {
+    const inX = player.x + player.w / 2 > p.x && player.x - player.w / 2 < p.x + p.w;
+    if (!inX) continue;
+    const prevFoot = foot - player.vy * dt;
+    if (prevFoot <= p.y + 2 && foot >= p.y) {
+      player.y       = p.y;
+      player.vy      = 0;
+      player.onGround = true;
     }
   }
-}
 
-function drawParallax() {
-  // Sky gradient already handled by bg fill
-  // Layer 1 — far city skyline
-  drawParallaxLayer(CITY_BUILDINGS, '#111128', 0.08, 800);
-  // Layer 2 — mid ruins
-  drawParallaxLayer(RUIN_SHAPES, '#15152e', 0.22, 800);
-  // Layer 3 — near rubble silhouette
-  drawParallaxLayer(RUBBLE_SHAPES, '#1c1c38', 0.48, 800);
-}
+  // Fell off world → die
+  if (player.y > H + 200) { killPlayer(); return; }
 
-// ─── DRAW ─────────────────────────────────────────────────────────────────────
-function draw(ts) {
-  // Background
-  ctx.fillStyle = '#0d0d1a';
-  ctx.fillRect(0, 0, GAME_W, GAME_H);
-
-  drawParallax();
-
-  // World transform
-  ctx.save();
-  ctx.translate(-Math.round(camera.x), 0);
-
-  // Ground
-  ctx.fillStyle = '#1e1e32';
-  ctx.fillRect(camera.x - 10, GROUND_Y, GAME_W + 20, GAME_H - GROUND_Y + 10);
-  ctx.fillStyle = '#2d2d4a';
-  ctx.fillRect(camera.x - 10, GROUND_Y, GAME_W + 20, 5);
-  // Ground texture lines
-  ctx.strokeStyle = '#25253d';
-  ctx.lineWidth = 1;
-  for (let lx = Math.floor(camera.x / 40) * 40; lx < camera.x + GAME_W; lx += 40) {
-    ctx.beginPath();
-    ctx.moveTo(lx, GROUND_Y + 5);
-    ctx.lineTo(lx, GAME_H);
-    ctx.stroke();
+  // Bob
+  if (Math.abs(player.vx) > 10 && player.onGround) {
+    player.bobTimer += dt * 10;
+  } else {
+    player.bobTimer = 0;
   }
 
-  // Platforms
+  // ── Stat decay (scaled by difficulty) ──
+  player.hunger = Math.max(0, player.hunger - HUNGER_DECAY_BASE * decayMult * dt);
+  player.thirst = Math.max(0, player.thirst - THIRST_DECAY_BASE * decayMult * dt);
+
+  if (player.hunger <= 0 || player.thirst <= 0) { killPlayer(); return; }
+
+  // ── Score: (distance×0.1 + time×0.5) × scoreMult ──
+  const dist = Math.max(0, (player.x - player.startX) / 100);
+  score = (dist * 0.1 + worldTime * 0.5) * scoreMult;
+
+  // ── Camera ──
+  const targetCamX = player.x - W * 0.30;
+  cameraX += (targetCamX - cameraX) * Math.min(1, dt * 5);
+
+  // ── World gen ──
+  ensureGround(cameraX + W + 900);
+
+  while (nextPlatformX < cameraX + W + 500) {
+    spawnPlatform(nextPlatformX);
+    nextPlatformX += rand(200, 420);
+  }
+  while (nextCrateX < cameraX + W + 300) {
+    spawnCrate(nextCrateX, cfg);
+    nextCrateX += rand(cfg.crateGapMin, cfg.crateGapMax);
+  }
+
+  // ── Despawn ──
+  const cutoff = cameraX - 1400;
+  platforms = platforms.filter(p => p.x + p.w > cutoff);
+  crates    = crates.filter(c => c.x + c.w > cutoff || c.labelTimer > 0);
+
+  // ── Crate collection (simple AABB) ──
+  const pl = player.x - player.w / 2, pr = player.x + player.w / 2;
+  const pt = player.y - player.h,     pb = player.y;
+
+  for (const c of crates) {
+    if (c.collected) {
+      c.labelTimer -= dt;
+      c.labelY     -= 30 * dt;
+      continue;
+    }
+    if (pr > c.x && pl < c.x + c.w && pb > c.y && pt < c.y + c.h) {
+      c.collected  = true;
+      c.labelTimer = 1.5;
+      c.labelY     = c.y - 10;
+      switch (c.type) {
+        case 'food':     player.hunger  = Math.min(100, player.hunger  + 30); c.label = '+FOOD';   break;
+        case 'water':    player.thirst  = Math.min(100, player.thirst  + 35); c.label = '+WATER';  break;
+        case 'medicine': player.health  = Math.min(100, player.health  + 25); c.label = '+HEALTH'; break;
+        case 'fuel':     player.stamina = Math.min(100, player.stamina + 40); c.label = '+STAM';   break;
+      }
+    }
+  }
+
+  // ── Stage flash timer ──
+  if (stageFlash) {
+    stageFlash.timer -= dt;
+    if (stageFlash.timer <= 0) stageFlash = null;
+  }
+}
+
+function killPlayer() {
+  if (player.dead) return;
+  player.dead = true;
+  state = 'dead';
+}
+
+// ══════════════════════════════════════════════
+//  DRAW
+// ══════════════════════════════════════════════
+function draw() {
+  const cfg = STAGE_CONFIG[difficultyStage] || STAGE_CONFIG[1];
+
+  // Sky
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+
+  // ── Parallax ruins (scroll multiplier increases with stage) ──
+  const sm = cfg.scrollMult;
+  for (const r of bgRuins) {
+    const rx = r.x - cameraX * r.layer * sm;
+    ctx.fillStyle = `rgba(28, 22, 42, 0.92)`;
+    ctx.fillRect(rx, r.baseY - r.h, r.w, r.h);
+  }
+
+  // ── World (camera-shifted) ──
+  ctx.save();
+  ctx.translate(-Math.round(cameraX), 0);
+
+  // Ground & platforms
   for (const p of platforms) {
-    if (p.x + p.w < camera.x - 10 || p.x > camera.x + GAME_W + 10) continue;
-    ctx.fillStyle = '#1e1e32';
+    ctx.fillStyle = p.isGround ? '#2a2a3e' : '#3a2a4e';
     ctx.fillRect(p.x, p.y, p.w, p.h);
-    ctx.fillStyle = '#2d2d4a';
-    ctx.fillRect(p.x, p.y, p.w, 4);
-    ctx.fillStyle = '#3a3a5c';
-    ctx.fillRect(p.x + 1, p.y, p.w - 2, 2);
+    if (!p.isGround) {
+      ctx.fillStyle = 'rgba(233,69,96,0.38)';
+      ctx.fillRect(p.x, p.y, p.w, 3);
+    }
   }
 
   // Crates
+  const crateColors = { food: '#44cc66', water: '#44aaff', medicine: '#ff6688', fuel: '#ffaa22' };
   for (const c of crates) {
-    if (c.collected) continue;
-    if (c.x + c.w < camera.x - 20 || c.x > camera.x + GAME_W + 20) continue;
-
-    c.glow = (c.glow + 0.05) % (Math.PI * 2);
-    const g = (Math.sin(c.glow) + 1) / 2;
-
-    // Shadow under crate
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    ctx.beginPath();
-    ctx.ellipse(c.x + c.w / 2, GROUND_Y + 3, c.w / 2 + 2, 4, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Glow halo
-    ctx.shadowColor = '#ffa040';
-    ctx.shadowBlur = 8 + g * 18;
-
-    // Crate body
-    const r = Math.floor(190 + g * 65);
-    const gr = Math.floor(75 + g * 45);
-    ctx.fillStyle = `rgb(${r},${gr},0)`;
-    ctx.fillRect(c.x, c.y, c.w, c.h);
-
-    ctx.shadowBlur = 0;
-
-    // Crate details
-    ctx.strokeStyle = '#ffd700';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(c.x + 3, c.y + 3, c.w - 6, c.h - 6);
-    ctx.beginPath();
-    ctx.moveTo(c.x + c.w / 2, c.y + 3);
-    ctx.lineTo(c.x + c.w / 2, c.y + c.h - 3);
-    ctx.moveTo(c.x + 3, c.y + c.h / 2);
-    ctx.lineTo(c.x + c.w - 3, c.y + c.h / 2);
-    ctx.stroke();
-
-    // [E] prompt
-    const dxC = Math.abs((c.x + c.w / 2) - (player.x + player.w / 2));
-    if (dxC < 60) {
-      ctx.fillStyle = '#ffd700';
-      ctx.font = 'bold 10px monospace';
+    if (!c.collected) {
+      ctx.fillStyle = crateColors[c.type] || '#aaa';
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      // Icon
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 13px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('[E]', c.x + c.w / 2, c.y - 7);
+      ctx.fillText(c.type[0].toUpperCase(), c.x + c.w / 2, c.y + c.h - 8);
     }
-  }
-
-  // NPCs
-  for (const n of npcs) {
-    if (n.x + n.w < camera.x - 20 || n.x > camera.x + GAME_W + 20) continue;
-
-    n.bob = (n.bob + 0.025) % (Math.PI * 2);
-    const bob = Math.sin(n.bob) * 2;
-
-    // Shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    ctx.beginPath();
-    ctx.ellipse(n.x + n.w / 2, GROUND_Y + 3, n.w / 2 + 3, 4, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Legs (simple)
-    ctx.fillStyle = n.talked ? '#555' : n.color;
-    ctx.fillRect(n.x + 1,       n.y + n.h - 12 + bob, 5, 12);
-    ctx.fillRect(n.x + n.w - 6, n.y + n.h - 12 + bob, 5, 12);
-
-    // Body
-    ctx.fillStyle = n.talked ? '#444' : n.color;
-    ctx.fillRect(n.x, n.y + 14 + bob, n.w, n.h - 26);
-
-    // Arms
-    ctx.fillStyle = n.talked ? '#4a4a4a' : n.color;
-    ctx.fillRect(n.x - 4,  n.y + 16 + bob, 5, 14);
-    ctx.fillRect(n.x + n.w - 1, n.y + 16 + bob, 5, 14);
-
-    // Head
-    ctx.fillStyle = '#d4a574';
-    ctx.fillRect(n.x + 1, n.y + 1 + bob, n.w - 2, 14);
-
-    // Eyes
-    ctx.fillStyle = '#222';
-    ctx.fillRect(n.x + 3, n.y + 5 + bob, 3, 3);
-    ctx.fillRect(n.x + n.w - 6, n.y + 5 + bob, 3, 3);
-
-    // Name label
-    ctx.textAlign = 'center';
-    const nx = n.x + n.w / 2;
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(nx - 28, n.y - 22 + bob, 56, 13);
-    ctx.fillStyle = n.talked ? '#666' : '#fff';
-    ctx.font = 'bold 9px monospace';
-    ctx.fillText(n.name, nx, n.y - 12 + bob);
-
-    // Type badge
-    ctx.fillStyle = n.talked ? '#555' : n.color;
-    ctx.font = '8px monospace';
-    ctx.fillText(n.type.toUpperCase(), nx, n.y - 24 + bob);
-
-    // [E] prompt
-    if (!n.talked) {
-      const dxN = Math.abs((n.x + n.w / 2) - (player.x + player.w / 2));
-      if (dxN < 80) {
-        ctx.fillStyle = '#ffd700';
-        ctx.font = 'bold 10px monospace';
-        ctx.fillText('[E]', nx, n.y - 36 + bob);
-      }
-    }
-  }
-
-  // Player
-  {
-    const px = player.x;
-    const py = player.y + player.bobY;
-    const pw = player.w;
-    const ph = player.h;
-
-    // Shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.4)';
-    ctx.beginPath();
-    ctx.ellipse(px + pw / 2, GROUND_Y + 3, pw / 2 + 2, 4, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Legs
-    ctx.fillStyle = '#005f55';
-    ctx.fillRect(px + 1, py + ph - 10, 6, 10);
-    ctx.fillRect(px + pw - 7, py + ph - 10, 6, 10);
-
-    // Body
-    ctx.fillStyle = '#00b894';
-    ctx.fillRect(px, py + 14, pw, ph - 24);
-
-    // Arms (with slight swing based on bob)
-    const armSwing = player.bobY * 0.6;
-    ctx.fillStyle = '#009e80';
-    ctx.fillRect(px - 4, py + 16 + armSwing, 5, 12);
-    ctx.fillRect(px + pw - 1, py + 16 - armSwing, 5, 12);
-
-    // Head
-    ctx.fillStyle = '#00cec9';
-    ctx.fillRect(px + 1, py + 1, pw - 2, 14);
-
-    // Eyes / visor
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(px + 2, py + 4, pw - 4, 5);
-    ctx.fillStyle = 'rgba(0,255,255,0.4)';
-    ctx.fillRect(px + 3, py + 5, pw - 6, 3);
-
-    // Highlight edge
-    ctx.fillStyle = 'rgba(255,255,255,0.08)';
-    ctx.fillRect(px, py, 3, ph);
-  }
-
-  // Floating texts
-  ctx.textAlign = 'center';
-  for (const ft of floatTexts) {
-    ctx.globalAlpha = ft.life;
-    ctx.fillStyle = '#ffd700';
-    ctx.font = 'bold 13px monospace';
-    ctx.fillText(ft.text, ft.x, ft.y);
-  }
-  ctx.globalAlpha = 1;
-
-  ctx.restore(); // end world transform
-
-  // HUD
-  drawHUD();
-
-  // Overlays
-  if (state === 'dialogue') drawDialogue();
-  if (state === 'dead')     drawDead();
-}
-
-// ─── HUD ──────────────────────────────────────────────────────────────────────
-function drawHUD() {
-  // Panel
-  ctx.fillStyle = 'rgba(0,0,0,0.65)';
-  roundRect(ctx, 10, 10, 215, 88, 4);
-  ctx.fill();
-  ctx.strokeStyle = '#e94560';
-  ctx.lineWidth = 1;
-  roundRect(ctx, 10, 10, 215, 88, 4);
-  ctx.stroke();
-
-  // Title
-  ctx.fillStyle = '#e94560';
-  ctx.font = 'bold 11px monospace';
-  ctx.textAlign = 'left';
-  ctx.fillText('▸ DUST & STATIC', 18, 28);
-
-  // Hunger bar
-  const hpct = player.hunger / 100;
-  const hungerCritical = player.hunger < 15;
-  const hungerFlash = hungerCritical && Math.floor(Date.now() / 400) % 2 === 0;
-  ctx.fillStyle = '#1a1a2e';
-  ctx.fillRect(18, 36, 170, 11);
-  ctx.fillStyle = hungerFlash ? '#ff4400'
-                : hpct > 0.4  ? '#00ff88'
-                : hpct > 0.2  ? '#ffd700'
-                :               '#e94560';
-  ctx.fillRect(18, 36, Math.max(0, hpct * 170), 11);
-  ctx.strokeStyle = hungerFlash ? '#ff8800' : '#333';
-  ctx.lineWidth = hungerFlash ? 2 : 1;
-  ctx.strokeRect(18, 36, 170, 11);
-  ctx.lineWidth = 1;
-  ctx.fillStyle = '#fff';
-  ctx.font = '8px monospace';
-  ctx.fillText(`FOOD ${Math.ceil(player.hunger).toString().padStart(3)}%`, 192, 46);
-
-  // Thirst bar
-  const tpct = player.thirst / 100;
-  const thirstCritical = player.thirst < 15;
-  const thirstFlash = thirstCritical && Math.floor(Date.now() / 400) % 2 === 0;
-  ctx.fillStyle = '#1a1a2e';
-  ctx.fillRect(18, 52, 170, 11);
-  ctx.fillStyle = thirstFlash ? '#ff4400'
-                : tpct > 0.4  ? '#00e6ff'
-                : tpct > 0.2  ? '#ffd700'
-                :               '#e94560';
-  ctx.fillRect(18, 52, Math.max(0, tpct * 170), 11);
-  ctx.strokeStyle = thirstFlash ? '#ff8800' : '#333';
-  ctx.lineWidth = thirstFlash ? 2 : 1;
-  ctx.strokeRect(18, 52, 170, 11);
-  ctx.lineWidth = 1;
-  ctx.fillStyle = '#fff';
-  ctx.fillText(`H₂O  ${Math.ceil(player.thirst).toString().padStart(3)}%`, 192, 62);
-
-  // Critical warning messages
-  if (hungerCritical || thirstCritical) {
-    const warnFlash = Math.floor(Date.now() / 600) % 2 === 0;
-    if (warnFlash) {
+    if (c.labelTimer > 0) {
+      const alpha = Math.min(1, c.labelTimer);
       ctx.save();
-      ctx.font = 'bold 11px monospace';
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#ffff88';
+      ctx.font = 'bold 14px monospace';
       ctx.textAlign = 'center';
-      let warnY = 95;
-      if (hungerCritical) {
-        ctx.fillStyle = '#ff6600';
-        ctx.fillText('⚠ CRITICAL: need food!', GAME_W / 2, warnY);
-        warnY += 16;
-      }
-      if (thirstCritical) {
-        ctx.fillStyle = '#ff6600';
-        ctx.fillText('⚠ CRITICAL: find water!', GAME_W / 2, warnY);
-      }
-      ctx.textAlign = 'left';
+      ctx.fillText(c.label, c.x + c.w / 2, c.labelY);
       ctx.restore();
     }
   }
 
-  // Stats row
-  ctx.fillStyle = '#8888aa';
-  ctx.font = '9px monospace';
-  const dist    = player.maxDist;
-  const elapsed = Math.floor(worldTime);
-  const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
-  const ss = String(elapsed % 60).padStart(2, '0');
-  ctx.fillText(`DIST ${dist}m`, 18, 80);
-  ctx.fillText(`TIME ${mm}:${ss}`, 100, 80);
+  // Player
+  const bob   = player.onGround && Math.abs(player.vx) > 10 ? Math.sin(player.bobTimer) * 3 : 0;
+  const pCol  = player.dead ? '#e94560' : '#1AE0C8';
+  const pColH = player.dead ? '#e94560' : '#22f5da';
+  const px    = player.x;
+  const py    = player.y;
+  // Body
+  ctx.fillStyle = pCol;
+  ctx.fillRect(px - player.w / 2, py - player.h + bob, player.w, player.h - 16);
+  // Head
+  ctx.fillStyle = pColH;
+  ctx.fillRect(px - 9, py - player.h - 16 + bob, 18, 16);
+  // Eyes
+  if (!player.dead) {
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(px - 6, py - player.h - 12 + bob, 4, 4);
+    ctx.fillRect(px + 2,  py - player.h - 12 + bob, 4, 4);
+  }
 
-  // Controls hint (top-right corner)
-  ctx.fillStyle = 'rgba(0,0,0,0.5)';
-  roundRect(ctx, GAME_W - 168, 10, 158, 54, 4);
-  ctx.fill();
-  ctx.fillStyle = '#44445a';
-  ctx.font = '9px monospace';
-  ctx.textAlign = 'left';
-  ctx.fillText('WASD / ARROWS  Move', GAME_W - 163, 27);
-  ctx.fillText('SPACE / W / ↑   Jump', GAME_W - 163, 39);
-  ctx.fillText('E / tap btn    Interact', GAME_W - 163, 51);
+  ctx.restore();
 
-  // On-screen D-pad buttons (shown while playing)
-  if (state === 'playing') {
+  // ── HUD ──
+  drawHUD(cfg);
+
+  // ── Stage flash ──
+  if (stageFlash && state === 'playing') {
+    const t   = stageFlash.timer;
+    const alpha = t > 1.5 ? 1 : t / 1.5;
     ctx.save();
-    for (const [name, b] of Object.entries(BTNS)) {
-      ctx.globalAlpha = b.pressed ? 1.0 : 0.52;
-
-      // Button fill
-      ctx.fillStyle = 'rgba(10,10,25,0.82)';
-      roundRect(ctx, b.x, b.y, b.w, b.h, 12);
-      ctx.fill();
-
-      // Button border — colour-coded by type
-      ctx.strokeStyle = (name === 'interact') ? '#ffd700'
-                      : (name === 'jump')     ? '#00ff88'
-                                              : '#00cec9';
-      ctx.lineWidth = b.pressed ? 2.5 : 1.5;
-      roundRect(ctx, b.x, b.y, b.w, b.h, 12);
-      ctx.stroke();
-
-      // Label
-      ctx.fillStyle = (name === 'interact') ? '#ffd700' : '#ffffff';
-      ctx.font = 'bold 24px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 9);
-    }
+    ctx.globalAlpha = alpha;
+    // Background glow strip
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, H / 2 - 50, W, 80);
+    ctx.fillStyle = stageFlash.color;
+    ctx.font = 'bold 52px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(stageFlash.text, W / 2, H / 2 + 8);
     ctx.restore();
   }
+
+  // ── Death screen ──
+  if (state === 'dead') drawDeathScreen(cfg);
 }
 
-// ─── DIALOGUE BOX ─────────────────────────────────────────────────────────────
-function drawDialogue() {
-  if (!dialogue) return;
-  dlgChoiceRects = []; // reset hit rects each frame
+function drawHUD(cfg) {
+  const M = 16;
 
-  // Dim
-  ctx.fillStyle = 'rgba(0,0,0,0.72)';
-  ctx.fillRect(0, 0, GAME_W, GAME_H);
-
-  const bx = 70, by = GAME_H / 2 - 100, bw = GAME_W - 140, bh = 220;
-
-  // Box
-  ctx.fillStyle = '#0a0a18';
-  roundRect(ctx, bx, by, bw, bh, 6);
-  ctx.fill();
-  ctx.strokeStyle = '#e94560';
-  ctx.lineWidth = 2;
-  roundRect(ctx, bx, by, bw, bh, 6);
-  ctx.stroke();
-
-  // Speaker
-  ctx.fillStyle = '#e94560';
-  ctx.font = 'bold 11px monospace';
+  // Stat bars
+  const BAR_W = 160, BAR_H = 14;
+  const stats = [
+    { label: 'HUNGER',  val: player.hunger,  col: '#00ff88' },
+    { label: 'THIRST',  val: player.thirst,  col: '#00e6ff' },
+    { label: 'STAMINA', val: player.stamina, col: '#ffdd44' },
+  ];
   ctx.textAlign = 'left';
-  ctx.fillText(dialogue.speaker, bx + 16, by + 22);
+  for (let i = 0; i < stats.length; i++) {
+    const s = stats[i];
+    const gy = M + i * 26;
+    ctx.fillStyle = s.col;
+    ctx.font = '10px monospace';
+    ctx.fillText(s.label, M, gy + 11);
+    ctx.fillStyle = 'rgba(30,30,48,0.88)';
+    ctx.fillRect(M + 62, gy, BAR_W, BAR_H);
+    ctx.fillStyle = s.col;
+    ctx.fillRect(M + 62, gy, BAR_W * Math.max(0, s.val / 100), BAR_H);
+  }
 
-  // Divider
-  ctx.strokeStyle = '#2a2a45';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(bx + 16, by + 30);
-  ctx.lineTo(bx + bw - 16, by + 30);
-  ctx.stroke();
+  // Top-right info
+  const dist = Math.max(0, (player.x - player.startX) / 100);
+  const mins = Math.floor(worldTime / 60);
+  const secs = Math.floor(worldTime % 60);
 
-  // Body text (word-wrap)
-  ctx.fillStyle = '#ccccdd';
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#e8e8ff';
+  ctx.font = '14px monospace';
+  ctx.fillText(dist.toFixed(0) + 'm', W - M, 28);
+
+  ctx.fillStyle = '#aaaacc';
   ctx.font = '12px monospace';
-  const maxW = bw - 40;
-  const words = dialogue.text.split(' ');
-  let line = '';
-  let ly = by + 50;
-  for (const w of words) {
-    const test = line + w + ' ';
-    if (ctx.measureText(test).width > maxW && line) {
-      ctx.fillText(line.trim(), bx + 20, ly);
-      line = w + ' ';
-      ly += 18;
-    } else {
-      line = test;
-    }
-  }
-  if (line.trim()) ctx.fillText(line.trim(), bx + 20, ly);
-  ly += 28;
+  ctx.fillText(`${mins}:${secs.toString().padStart(2, '0')}`, W - M, 46);
 
-  // Choices
-  for (let i = 0; i < dialogue.choices.length; i++) {
-    const sel = i === dlgChoice;
-    const choiceH = 24;
-    // Record hit rect for touch (slightly taller than visual row for easier tapping)
-    dlgChoiceRects.push({ x: bx + 12, y: ly - 16, w: bw - 24, h: choiceH + 4 });
-
-    if (sel) {
-      ctx.fillStyle = 'rgba(233,69,96,0.2)';
-      roundRect(ctx, bx + 12, ly - 14, bw - 24, 20, 3);
-      ctx.fill();
-      ctx.strokeStyle = '#e94560';
-      ctx.lineWidth = 1;
-      roundRect(ctx, bx + 12, ly - 14, bw - 24, 20, 3);
-      ctx.stroke();
-    }
-    ctx.fillStyle = sel ? '#fff' : '#778';
-    ctx.font = (sel ? 'bold ' : '') + '11px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText((sel ? '▶ ' : '  ') + dialogue.choices[i].text, bx + 20, ly);
-    ly += choiceH;
-  }
-
-  // Footer
-  ctx.fillStyle = '#44445a';
-  ctx.font = '9px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText('↑↓/W·S navigate · E/ENTER confirm · tap choice (twice) on touch', GAME_W / 2, by + bh - 10);
-}
-
-// ─── DEATH SCREEN ─────────────────────────────────────────────────────────────
-function drawDead() {
-  ctx.fillStyle = 'rgba(0,0,0,0.88)';
-  ctx.fillRect(0, 0, GAME_W, GAME_H);
-
-  // Glitch title
-  ctx.fillStyle = '#e94560';
-  ctx.font = 'bold 48px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText('YOU DIED', GAME_W / 2, GAME_H / 2 - 70);
-
-  // Cause
-  ctx.fillStyle = '#888';
-  ctx.font = '14px monospace';
-  ctx.fillText(`Cause of death: ${player.deathCause}`, GAME_W / 2, GAME_H / 2 - 38);
-
-  // Stats
-  ctx.fillStyle = '#ffd700';
-  ctx.font = 'bold 18px monospace';
-  ctx.fillText(`Distance traveled: ${player.maxDist}m`, GAME_W / 2, GAME_H / 2 + 2);
-  const elapsed = Math.floor(worldTime);
-  const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
-  const ss = String(elapsed % 60).padStart(2, '0');
-  ctx.fillText(`Time survived: ${mm}:${ss}`, GAME_W / 2, GAME_H / 2 + 30);
-
-  // Restart
-  ctx.fillStyle = '#00ff88';
-  ctx.font = 'bold 20px monospace';
-  ctx.fillText('[ R ]  RESTART  — or tap anywhere', GAME_W / 2, GAME_H / 2 + 80);
-
-  ctx.fillStyle = '#444';
-  ctx.font = '11px monospace';
-  ctx.fillText('The wasteland remembers no one.', GAME_W / 2, GAME_H / 2 + 108);
-}
-
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
-}
-
-// ─── RESET ────────────────────────────────────────────────────────────────────
-function resetGame() {
-  player       = makePlayer();
-  state        = 'playing';
-  worldTime    = 0;
-  camera       = { x: 0, targetX: 0 };
-  platforms    = [];
-  crates       = [];
-  npcs         = [];
-  floatTexts   = [];
-  dialogue     = null;
-  dlgChoice    = 0;
-  worldEdge    = 0;
-  nextCrateX   = 250 + Math.random() * 150;
-  nextNpcX     = 800 + Math.random() * 400;
-  generateWorld(0);
-}
-
-// ─── TITLE SCREEN ─────────────────────────────────────────────────────────────
-let titleActive = true;
-let titlePhase  = 0;
-
-function drawTitle() {
-  ctx.fillStyle = '#0d0d1a';
-  ctx.fillRect(0, 0, GAME_W, GAME_H);
-
-  drawParallax();
-
-  titlePhase += 0.02;
-
-  // Animated static lines
-  for (let i = 0; i < 6; i++) {
-    if (Math.random() < 0.3) {
-      const ly = Math.random() * GAME_H;
-      ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.04})`;
-      ctx.fillRect(0, ly, GAME_W, 1);
-    }
-  }
-
-  // Ground
-  ctx.fillStyle = '#1e1e32';
-  ctx.fillRect(0, GROUND_Y, GAME_W, GAME_H - GROUND_Y);
-  ctx.fillStyle = '#2d2d4a';
-  ctx.fillRect(0, GROUND_Y, GAME_W, 5);
-
-  // Title text
-  const flicker = Math.sin(titlePhase * 7) > 0.85 ? 0.6 : 1;
-  ctx.globalAlpha = flicker;
-  ctx.fillStyle = '#e94560';
-  ctx.font = 'bold 56px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText('DUST & STATIC', GAME_W / 2, GAME_H / 2 - 60);
-  ctx.globalAlpha = 1;
-
-  ctx.fillStyle = '#888';
-  ctx.font = '14px monospace';
-  ctx.fillText('post-apocalyptic survival', GAME_W / 2, GAME_H / 2 - 30);
-
-  // Pulsing start prompt
-  const pulse = (Math.sin(titlePhase * 3) + 1) / 2;
-  ctx.fillStyle = `rgba(0,255,136,${0.5 + pulse * 0.5})`;
+  // Score (prominent)
+  ctx.fillStyle = '#ffffff';
   ctx.font = 'bold 16px monospace';
-  ctx.fillText('Press SPACE / ENTER — or Tap to begin', GAME_W / 2, GAME_H / 2 + 30);
+  ctx.fillText('SCORE: ' + Math.floor(score), W - M, 70);
 
-  // Controls summary
-  ctx.fillStyle = '#44445a';
-  ctx.font = '11px monospace';
-  ctx.fillText('WASD / Arrows: Move & Jump   E / on-screen buttons: Interact', GAME_W / 2, GAME_H / 2 + 65);
-  ctx.fillText('Manage Hunger & Thirst — survive as long as you can', GAME_W / 2, GAME_H / 2 + 82);
-
-  ctx.fillStyle = '#2a2a4a';
-  ctx.font = '9px monospace';
-  ctx.fillText('a game about the end of things', GAME_W / 2, GAME_H - 16);
+  // Stage label (color-coded)
+  ctx.fillStyle = cfg.color;
+  ctx.font = 'bold 13px monospace';
+  ctx.fillText(`STAGE ${difficultyStage} — ${cfg.name}`, W - M, 92);
 }
 
-// Handle title screen input
-window.addEventListener('keydown', e => {
-  if (titleActive && (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyE')) {
-    titleActive = false;
-    state = 'playing';
-    worldTime = 0;
-  }
-}, { capture: true });
+function drawDeathScreen(cfg) {
+  ctx.fillStyle = 'rgba(10,4,12,0.90)';
+  ctx.fillRect(0, 0, W, H);
 
-// ─── MAIN LOOP ────────────────────────────────────────────────────────────────
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#e94560';
+  ctx.font = 'bold 64px monospace';
+  ctx.fillText('YOU DIED', W / 2, 275);
+
+  const dist = Math.max(0, (player.x - player.startX) / 100);
+  const mins = Math.floor(worldTime / 60);
+  const secs = Math.floor(worldTime % 60);
+
+  ctx.fillStyle = '#aaaacc';
+  ctx.font = '22px monospace';
+  ctx.fillText(`Time Survived: ${mins}:${secs.toString().padStart(2, '0')}`, W / 2, 348);
+  ctx.fillText(`Distance Travelled: ${dist.toFixed(0)}m`, W / 2, 386);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 28px monospace';
+  ctx.fillText('FINAL SCORE: ' + Math.floor(score), W / 2, 434);
+
+  ctx.fillStyle = cfg.color;
+  ctx.font = '16px monospace';
+  ctx.fillText(`Stage Reached: ${difficultyStage} — ${cfg.name}`, W / 2, 464);
+
+  // Blinking restart hint
+  if (Math.floor(Date.now() / 700) % 2 === 0) {
+    ctx.fillStyle = '#ffd700';
+    ctx.font = '20px monospace';
+    ctx.fillText('PRESS R TO RESTART', W / 2, 514);
+  }
+}
+
+// ══════════════════════════════════════════════
+//  GAME LOOP
+// ══════════════════════════════════════════════
+let lastTs = null;
+
 function loop(ts) {
-  const dt = Math.min((ts - lastTs) / 16.667, 3.5); // cap at ~3.5 frames
+  if (!lastTs) lastTs = ts;
+  const dt = Math.min((ts - lastTs) / 1000, 0.05);
   lastTs = ts;
 
-  if (titleActive) {
-    drawTitle();
-  } else {
-    update(dt);
-    draw(ts);
-  }
-
+  update(dt);
+  draw();
   requestAnimationFrame(loop);
 }
 
-requestAnimationFrame(ts => { lastTs = ts; requestAnimationFrame(loop); });
+window.addEventListener('keydown', e => {
+  if (e.code === 'KeyR' && state === 'dead') {
+    initGame();
+    lastTs = null;
+  }
+});
+
+// ══════════════════════════════════════════════
+//  INIT
+// ══════════════════════════════════════════════
+initGame();
+requestAnimationFrame(loop);
 </script>
 </body>
 </html>
