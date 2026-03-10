@@ -67,6 +67,11 @@ func _ready() -> void:
 	camera.position_smoothing_enabled = true
 	camera.position_smoothing_speed = 5.0
 	camera.zoom = Vector2(1.0, 1.0)
+	# Constrain camera so player can't see above sky or below ground
+	camera.limit_top = -300
+	camera.limit_bottom = 620
+	camera.limit_left = -100000
+	camera.limit_right = 100000
 	add_child(camera)
 
 	# Connect player signals

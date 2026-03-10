@@ -1,8 +1,8 @@
 res://scenes/npcs/Survivor.tscn::ecd2133988fc0c40572db0a4ee6cc62f::1773119426::res://.godot/exported/133200997/export-8889a09045c2688a66935fa25d7bda3d-Survivor.scn
 res://scenes/player/Player.tscn::20dadabe6ef860fe622da3239b57e753::1773119387::res://.godot/exported/133200997/export-a4e9bb150591131ae307f440fab940ce-Player.scn
-res://scenes/ui/DeathScreen.tscn::dd8c80f7393dc116eb1ecea42448523f::1773119479::res://.godot/exported/133200997/export-0c3a0c013e0d82c5e83b3c07a5ff575a-DeathScreen.scn
-res://scenes/ui/DialogueBox.tscn::df2a874c4779f16817be97cd6f8f2115::1773119464::res://.godot/exported/133200997/export-408fe0e8827d2e3117f7a3499e6fad6e-DialogueBox.scn
-res://scenes/ui/HUD.tscn::82166f621822613c9e5e33ab5cf7e8c1::1773119443::res://.godot/exported/133200997/export-74b5c9848938f4eb9ebaf6fab3809318-HUD.scn
+res://scenes/ui/DeathScreen.tscn::5be41bf6494ac36eef61ce236681aa3d::1773126204::res://.godot/exported/133200997/export-0c3a0c013e0d82c5e83b3c07a5ff575a-DeathScreen.scn
+res://scenes/ui/DialogueBox.tscn::e84e218d7c66c28e8ca9557e1a61d693::1773126179::res://.godot/exported/133200997/export-408fe0e8827d2e3117f7a3499e6fad6e-DialogueBox.scn
+res://scenes/ui/HUD.tscn::856ffa4db6390fb62c99f4c17c404fc9::1773126156::res://.godot/exported/133200997/export-74b5c9848938f4eb9ebaf6fab3809318-HUD.scn
 res://scenes/world/SupplyCrate.tscn::9dc287fd959c8efd6f2fb806cdbf2a06::1773119408::res://.godot/exported/133200997/export-caeb4830c139576f73164b87707378e2-SupplyCrate.scn
 res://scenes/world/World.tscn::5df4a56f2d8bf2cb9595f9a7d9bc259c::1773119518::res://.godot/exported/133200997/export-c7db8001466bdbc36a923010fa5ea39c-World.scn
 res://scenes/Main.tscn::ba356afa3b819d02cd0d24fc71376302::1773119523::res://.godot/exported/133200997/export-4a24720ee5e787dbe30abc634fa3679d-Main.scn

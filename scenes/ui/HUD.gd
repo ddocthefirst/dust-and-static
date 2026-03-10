@@ -1,123 +1,50 @@
 extends CanvasLayer
 
-var hunger_bar: ColorRect
-var hunger_fill: ColorRect
-var thirst_bar: ColorRect
-var thirst_fill: ColorRect
-var stamina_bar: ColorRect
-var stamina_fill: ColorRect
-var distance_label: Label
-var time_label: Label
-var prompt_label: Label
-var stage_label: Label
-var score_label: Label
-
-const BAR_WIDTH: float = 160.0
-const BAR_HEIGHT: float = 14.0
-const BAR_BG_COLOR := Color(0.15, 0.15, 0.2, 0.85)
+@onready var hunger_bar: ProgressBar = $Root/StatsPanel/HungerRow/HungerBar
+@onready var thirst_bar: ProgressBar = $Root/StatsPanel/ThirstRow/ThirstBar
+@onready var stamina_bar: ProgressBar = $Root/StatsPanel/StaminaRow/StaminaBar
+@onready var distance_label: Label = $Root/InfoPanel/DistanceLabel
+@onready var time_label: Label = $Root/InfoPanel/TimeLabel
+@onready var score_label: Label = $Root/InfoPanel/ScoreLabel
+@onready var stage_label: Label = $Root/InfoPanel/StageLabel
+@onready var prompt_label: Label = $Root/PromptLabel
 
 func _ready() -> void:
-	_build_stat_bars()
-	_build_top_right_labels()
-	_build_prompt_label()
-
-	# Connect to player once the scene is fully ready
+	_style_bars()
 	call_deferred("_connect_player")
+
+func _style_bars() -> void:
+	_style_bar(hunger_bar, Color("#00ff88"))
+	_style_bar(thirst_bar, Color("#00e6ff"))
+	_style_bar(stamina_bar, Color("#ffdd44"))
+
+func _style_bar(bar: ProgressBar, fill_color: Color) -> void:
+	var fill_style := StyleBoxFlat.new()
+	fill_style.bg_color = fill_color
+	bar.add_theme_stylebox_override("fill", fill_style)
+
+	var bg_style := StyleBoxFlat.new()
+	bg_style.bg_color = Color(0.15, 0.15, 0.2, 0.85)
+	bar.add_theme_stylebox_override("background", bg_style)
 
 func _connect_player() -> void:
 	var player = get_parent().get_node_or_null("Player")
 	if player:
 		player.stats_changed.connect(_on_stats_changed)
 
-func _build_stat_bars() -> void:
-	var margin := 16
-	var y_start := 16
-	var labels := ["HUNGER", "THIRST", "STAMINA"]
-	var fill_colors := [Color("#00ff88"), Color("#00e6ff"), Color("#ffdd44")]
-	var bar_fills := []
-
-	for i in range(3):
-		# Label
-		var lbl := Label.new()
-		lbl.text = labels[i]
-		lbl.position = Vector2(margin, y_start + i * 24)
-		lbl.add_theme_color_override("font_color", fill_colors[i])
-		lbl.add_theme_font_size_override("font_size", 10)
-		add_child(lbl)
-
-		# Bar background
-		var bg := ColorRect.new()
-		bg.size = Vector2(BAR_WIDTH, BAR_HEIGHT)
-		bg.position = Vector2(margin + 60, y_start + i * 24 + 1)
-		bg.color = BAR_BG_COLOR
-		add_child(bg)
-
-		# Bar fill
-		var fill := ColorRect.new()
-		fill.size = Vector2(BAR_WIDTH, BAR_HEIGHT)
-		fill.position = Vector2(margin + 60, y_start + i * 24 + 1)
-		fill.color = fill_colors[i]
-		add_child(fill)
-		bar_fills.append(fill)
-
-	hunger_fill = bar_fills[0]
-	thirst_fill = bar_fills[1]
-	stamina_fill = bar_fills[2]
-
-func _build_top_right_labels() -> void:
-	distance_label = Label.new()
-	distance_label.text = "0m"
-	distance_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	distance_label.position = Vector2(1280 - 200, 16)
-	distance_label.size = Vector2(184, 24)
-	distance_label.add_theme_color_override("font_color", Color("#e8e8ff"))
-	distance_label.add_theme_font_size_override("font_size", 14)
-	add_child(distance_label)
-
-	time_label = Label.new()
-	time_label.text = "0:00"
-	time_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	time_label.position = Vector2(1280 - 200, 40)
-	time_label.size = Vector2(184, 24)
-	time_label.add_theme_color_override("font_color", Color("#aaaacc"))
-	time_label.add_theme_font_size_override("font_size", 12)
-	add_child(time_label)
-
-	# Score display
-	score_label = Label.new()
-	score_label.text = "SCORE: 0"
-	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	score_label.position = Vector2(1280 - 200, 62)
-	score_label.size = Vector2(184, 26)
-	score_label.add_theme_color_override("font_color", Color("#ffffff"))
-	score_label.add_theme_font_size_override("font_size", 16)
-	add_child(score_label)
-
-	# Stage label (color-coded, updates on stage change)
-	stage_label = Label.new()
-	stage_label.text = "STAGE 1 — CALM"
-	stage_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	stage_label.position = Vector2(1280 - 200, 90)
-	stage_label.size = Vector2(184, 22)
-	stage_label.add_theme_color_override("font_color", Color("#00ff88"))
-	stage_label.add_theme_font_size_override("font_size", 13)
-	add_child(stage_label)
-
-func _build_prompt_label() -> void:
-	prompt_label = Label.new()
-	prompt_label.text = ""
-	prompt_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	prompt_label.position = Vector2(440, 660)
-	prompt_label.size = Vector2(400, 30)
-	prompt_label.add_theme_color_override("font_color", Color("#ffd700"))
-	prompt_label.add_theme_font_size_override("font_size", 14)
-	prompt_label.visible = false
-	add_child(prompt_label)
-
 func _on_stats_changed(hunger: float, thirst: float, stamina: float, _health: float) -> void:
-	hunger_fill.size.x = BAR_WIDTH * (hunger / 100.0)
-	thirst_fill.size.x = BAR_WIDTH * (thirst / 100.0)
-	stamina_fill.size.x = BAR_WIDTH * (stamina / 100.0)
+	hunger_bar.value = hunger
+	thirst_bar.value = thirst
+	stamina_bar.value = stamina
+
+func update_hunger(value: float) -> void:
+	hunger_bar.value = value
+
+func update_thirst(value: float) -> void:
+	thirst_bar.value = value
+
+func update_stamina(value: float) -> void:
+	stamina_bar.value = value
 
 func update_distance(dist: float) -> void:
 	distance_label.text = "%.0fm" % dist
