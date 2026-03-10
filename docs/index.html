@@ -66,6 +66,120 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
+// ─── VIRTUAL / TOUCH INPUT ────────────────────────────────────────────────────
+// Continuous virtual directional state
+const vkeys = { left: false, right: false };
+
+// D-pad button definitions in canvas-space coords
+const BTNS = {
+  left:     { x: 12,          y: 382, w: 62, h: 58, label: '←', pressed: false },
+  right:    { x: 82,          y: 382, w: 62, h: 58, label: '→', pressed: false },
+  jump:     { x: GAME_W - 74, y: 382, w: 62, h: 58, label: '↑', pressed: false },
+  interact: { x: GAME_W - 74, y: 315, w: 62, h: 58, label: 'E', pressed: false },
+};
+
+// Active pointer tracking: pointerId → action string
+const activePointers = new Map();
+
+// Dialogue choice hit rects — populated each frame during drawDialogue()
+let dlgChoiceRects = [];
+
+function canvasPoint(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (clientX - r.left) * (GAME_W / r.width),
+    y: (clientY - r.top)  * (GAME_H / r.height),
+  };
+}
+
+function hitBtn(gx, gy) {
+  for (const [name, b] of Object.entries(BTNS)) {
+    if (gx >= b.x && gx <= b.x + b.w && gy >= b.y && gy <= b.y + b.h) return name;
+  }
+  return null;
+}
+
+function zoneAction(gx, gy) {
+  // Top quarter → jump zone
+  if (gy < GAME_H * 0.25) return 'jump';
+  // Bottom half → left/right zones
+  if (gy > GAME_H * 0.5) return gx < GAME_W / 2 ? 'left' : 'right';
+  return null;
+}
+
+function releaseAction(action) {
+  const others = [...activePointers.values()];
+  if (action === 'left')  {
+    if (!others.some(a => a === 'left'))  { vkeys.left = false; BTNS.left.pressed = false; }
+  } else if (action === 'right') {
+    if (!others.some(a => a === 'right')) { vkeys.right = false; BTNS.right.pressed = false; }
+  } else if (action === 'jump')     { BTNS.jump.pressed = false; }
+  else if (action === 'interact') { BTNS.interact.pressed = false; }
+}
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  canvas.setPointerCapture(e.pointerId);
+  const { x, y } = canvasPoint(e.clientX, e.clientY);
+
+  // Title screen — any tap starts the game
+  if (titleActive) { titleActive = false; state = 'playing'; worldTime = 0; return; }
+
+  // Death screen — any tap restarts
+  if (state === 'dead') { resetGame(); return; }
+
+  // Dialogue — tap a choice to select; tap selected choice to confirm
+  if (state === 'dialogue') {
+    for (let i = 0; i < dlgChoiceRects.length; i++) {
+      const r = dlgChoiceRects[i];
+      if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+        if (dlgChoice === i) {
+          // Second tap on same choice confirms it
+          dialogue.choices[dlgChoice].action();
+          dialogue = null; dlgChoice = 0; state = 'playing';
+        } else {
+          dlgChoice = i;
+        }
+        return;
+      }
+    }
+    return;
+  }
+
+  // Playing — D-pad buttons take priority
+  const btn = hitBtn(x, y);
+  if (btn) {
+    BTNS[btn].pressed = true;
+    activePointers.set(e.pointerId, btn);
+    if (btn === 'left')     { vkeys.left = true; }
+    if (btn === 'right')    { vkeys.right = true; }
+    if (btn === 'jump')     { if (player.onGround) player.vy = JUMP_VY; }
+    if (btn === 'interact') { tryInteract(); }
+    return;
+  }
+
+  // Canvas zone taps
+  const zone = zoneAction(x, y);
+  if (zone) {
+    activePointers.set(e.pointerId, zone);
+    if (zone === 'left')  { vkeys.left = true; }
+    if (zone === 'right') { vkeys.right = true; }
+    if (zone === 'jump')  { if (player.onGround) player.vy = JUMP_VY; }
+  }
+}, { passive: false });
+
+canvas.addEventListener('pointerup', e => {
+  const action = activePointers.get(e.pointerId);
+  activePointers.delete(e.pointerId);
+  if (action) releaseAction(action);
+});
+
+canvas.addEventListener('pointercancel', e => {
+  const action = activePointers.get(e.pointerId);
+  activePointers.delete(e.pointerId);
+  if (action) releaseAction(action);
+});
+
 // ─── GAME STATE ───────────────────────────────────────────────────────────────
 let state = 'playing'; // 'playing' | 'dialogue' | 'dead'
 let worldTime = 0;
@@ -325,13 +439,13 @@ function update(dt) {
 
   worldTime += dt;
 
-  // Horizontal movement
+  // Horizontal movement (keyboard + virtual touch keys)
   let moving = false;
-  if (keys['ArrowLeft'] || keys['KeyA']) {
+  if (keys['ArrowLeft'] || keys['KeyA'] || vkeys.left) {
     player.vx = -PLAYER_SPEED;
     player.facing = -1;
     moving = true;
-  } else if (keys['ArrowRight'] || keys['KeyD']) {
+  } else if (keys['ArrowRight'] || keys['KeyD'] || vkeys.right) {
     player.vx = PLAYER_SPEED;
     player.facing = 1;
     moving = true;
@@ -701,12 +815,41 @@ function drawHUD() {
   ctx.textAlign = 'left';
   ctx.fillText('WASD / ARROWS  Move', GAME_W - 163, 27);
   ctx.fillText('SPACE / W / ↑   Jump', GAME_W - 163, 39);
-  ctx.fillText('E               Interact', GAME_W - 163, 51);
+  ctx.fillText('E / tap btn    Interact', GAME_W - 163, 51);
+
+  // On-screen D-pad buttons (shown while playing)
+  if (state === 'playing') {
+    ctx.save();
+    for (const [name, b] of Object.entries(BTNS)) {
+      ctx.globalAlpha = b.pressed ? 1.0 : 0.52;
+
+      // Button fill
+      ctx.fillStyle = 'rgba(10,10,25,0.82)';
+      roundRect(ctx, b.x, b.y, b.w, b.h, 12);
+      ctx.fill();
+
+      // Button border — colour-coded by type
+      ctx.strokeStyle = (name === 'interact') ? '#ffd700'
+                      : (name === 'jump')     ? '#00ff88'
+                                              : '#00cec9';
+      ctx.lineWidth = b.pressed ? 2.5 : 1.5;
+      roundRect(ctx, b.x, b.y, b.w, b.h, 12);
+      ctx.stroke();
+
+      // Label
+      ctx.fillStyle = (name === 'interact') ? '#ffd700' : '#ffffff';
+      ctx.font = 'bold 24px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 9);
+    }
+    ctx.restore();
+  }
 }
 
 // ─── DIALOGUE BOX ─────────────────────────────────────────────────────────────
 function drawDialogue() {
   if (!dialogue) return;
+  dlgChoiceRects = []; // reset hit rects each frame
 
   // Dim
   ctx.fillStyle = 'rgba(0,0,0,0.72)';
@@ -760,6 +903,10 @@ function drawDialogue() {
   // Choices
   for (let i = 0; i < dialogue.choices.length; i++) {
     const sel = i === dlgChoice;
+    const choiceH = 24;
+    // Record hit rect for touch (slightly taller than visual row for easier tapping)
+    dlgChoiceRects.push({ x: bx + 12, y: ly - 16, w: bw - 24, h: choiceH + 4 });
+
     if (sel) {
       ctx.fillStyle = 'rgba(233,69,96,0.2)';
       roundRect(ctx, bx + 12, ly - 14, bw - 24, 20, 3);
@@ -773,14 +920,14 @@ function drawDialogue() {
     ctx.font = (sel ? 'bold ' : '') + '11px monospace';
     ctx.textAlign = 'left';
     ctx.fillText((sel ? '▶ ' : '  ') + dialogue.choices[i].text, bx + 20, ly);
-    ly += 24;
+    ly += choiceH;
   }
 
   // Footer
   ctx.fillStyle = '#44445a';
   ctx.font = '9px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('↑↓ / W·S to navigate   E / ENTER to confirm', GAME_W / 2, by + bh - 10);
+  ctx.fillText('↑↓/W·S navigate · E/ENTER confirm · tap choice (twice) on touch', GAME_W / 2, by + bh - 10);
 }
 
 // ─── DEATH SCREEN ─────────────────────────────────────────────────────────────
@@ -811,7 +958,7 @@ function drawDead() {
   // Restart
   ctx.fillStyle = '#00ff88';
   ctx.font = 'bold 20px monospace';
-  ctx.fillText('[ R ]  RESTART', GAME_W / 2, GAME_H / 2 + 80);
+  ctx.fillText('[ R ]  RESTART  — or tap anywhere', GAME_W / 2, GAME_H / 2 + 80);
 
   ctx.fillStyle = '#444';
   ctx.font = '11px monospace';
@@ -895,12 +1042,12 @@ function drawTitle() {
   const pulse = (Math.sin(titlePhase * 3) + 1) / 2;
   ctx.fillStyle = `rgba(0,255,136,${0.5 + pulse * 0.5})`;
   ctx.font = 'bold 16px monospace';
-  ctx.fillText('Press SPACE or ENTER to begin', GAME_W / 2, GAME_H / 2 + 30);
+  ctx.fillText('Press SPACE / ENTER — or Tap to begin', GAME_W / 2, GAME_H / 2 + 30);
 
   // Controls summary
   ctx.fillStyle = '#44445a';
   ctx.font = '11px monospace';
-  ctx.fillText('WASD / Arrows: Move & Jump   E: Interact with crates & survivors', GAME_W / 2, GAME_H / 2 + 65);
+  ctx.fillText('WASD / Arrows: Move & Jump   E / on-screen buttons: Interact', GAME_W / 2, GAME_H / 2 + 65);
   ctx.fillText('Manage Hunger & Thirst — survive as long as you can', GAME_W / 2, GAME_H / 2 + 82);
 
   ctx.fillStyle = '#2a2a4a';
