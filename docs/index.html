@@ -38,8 +38,9 @@ const GROUND_Y = 370;
 const GRAVITY = 0.55;
 const JUMP_VY = -13;
 const PLAYER_SPEED = 4.2;
-const HUNGER_DECAY = 1 / 60;       // per frame at 60fps
-const THIRST_DECAY = 1.5 / 60;
+const HUNGER_DECAY = 0.4 / 60;     // per frame at 60fps (reduced from 1.0)
+const THIRST_DECAY = 0.6 / 60;     // per frame at 60fps (reduced from 1.5)
+const GRACE_PERIOD = 10;           // seconds before decay starts
 
 // ─── CANVAS SETUP ────────────────────────────────────────────────────────────
 const canvas = document.getElementById('game');
@@ -224,12 +225,12 @@ const DIALOGUE_SCRIPTS = {
       speaker: npc.name + ' — Merchant',
       text: '"Supplies are scarce out here. I can make a trade… if the price is right."',
       choices: [
-        { text: 'Trade food for water (+25 water, -20 food)',
-          action() { player.hunger = Math.max(0, player.hunger - 20);
-                     player.thirst = Math.min(100, player.thirst + 25); } },
-        { text: 'Trade water for food (-20 water, +25 food)',
-          action() { player.thirst = Math.max(0, player.thirst - 20);
-                     player.hunger = Math.min(100, player.hunger + 25); } },
+        { text: 'Trade food for water (+35 water, -15 food)',
+          action() { player.hunger = Math.max(0, player.hunger - 15);
+                     player.thirst = Math.min(100, player.thirst + 35); } },
+        { text: 'Trade water for food (-15 water, +35 food)',
+          action() { player.thirst = Math.max(0, player.thirst - 15);
+                     player.hunger = Math.min(100, player.hunger + 35); } },
         { text: 'Walk away', action() {} },
       ],
     };
@@ -252,10 +253,10 @@ const DIALOGUE_SCRIPTS = {
       speaker: npc.name + ' — Hostile',
       text: '"Your supplies or your life. I\'ve killed for less. Don\'t test me."',
       choices: [
-        { text: 'Hand over food (-30 food)',
-          action() { player.hunger = Math.max(0, player.hunger - 30); } },
-        { text: 'Hand over water (-30 water)',
-          action() { player.thirst = Math.max(0, player.thirst - 30); } },
+        { text: 'Hand over food (-10 food)',
+          action() { player.hunger = Math.max(0, player.hunger - 10); } },
+        { text: 'Hand over water (-10 water)',
+          action() { player.thirst = Math.max(0, player.thirst - 10); } },
         { text: '▶ Sprint away!',
           action() { player.vx = player.facing * 10; } },
       ],
@@ -300,7 +301,7 @@ function generateWorld(upToX) {
       collected: false,
       glow: Math.random() * Math.PI * 2,
     });
-    nextCrateX += 400 + Math.random() * 400;
+    nextCrateX += 300 + Math.random() * 200;
   }
 
   // NPCs
@@ -373,15 +374,18 @@ function tryInteract() {
       const r = Math.random();
       let msg;
       if (r < 0.35) {
-        player.hunger = Math.min(100, player.hunger + 22);
-        msg = '+FOOD';
+        const foodAmt = 25 + Math.floor(Math.random() * 16); // +25 to +40
+        player.hunger = Math.min(100, player.hunger + foodAmt);
+        msg = `+FOOD +${foodAmt}`;
       } else if (r < 0.70) {
-        player.thirst = Math.min(100, player.thirst + 22);
-        msg = '+WATER';
+        const waterAmt = 30 + Math.floor(Math.random() * 16); // +30 to +45
+        player.thirst = Math.min(100, player.thirst + waterAmt);
+        msg = `+WATER +${waterAmt}`;
       } else {
-        player.hunger = Math.min(100, player.hunger + 12);
-        player.thirst = Math.min(100, player.thirst + 12);
-        msg = '+SUPPLIES';
+        const medAmt = 20 + Math.floor(Math.random() * 16); // +20 to +35
+        player.hunger = Math.min(100, player.hunger + medAmt);
+        player.thirst = Math.min(100, player.thirst + medAmt);
+        msg = `+MED +${medAmt}`;
       }
       floatTexts.push({ x: c.x + c.w / 2, y: c.y - 4, text: msg, life: 1 });
       return;
@@ -484,9 +488,11 @@ function update(dt) {
   generateWorld(camera.x + GAME_W);
   cullWorld();
 
-  // Stat decay
-  player.hunger = Math.max(0, player.hunger - HUNGER_DECAY * dt * 60);
-  player.thirst = Math.max(0, player.thirst - THIRST_DECAY * dt * 60);
+  // Stat decay (grace period for first 10 seconds)
+  if (worldTime > GRACE_PERIOD) {
+    player.hunger = Math.max(0, player.hunger - HUNGER_DECAY * dt * 60);
+    player.thirst = Math.max(0, player.thirst - THIRST_DECAY * dt * 60);
+  }
 
   // Death
   if (player.hunger <= 0 || player.thirst <= 0) {
@@ -993,7 +999,7 @@ function resetGame() {
   dialogue     = null;
   dlgChoice    = 0;
   worldEdge    = 0;
-  nextCrateX   = 400 + Math.random() * 400;
+  nextCrateX   = 300 + Math.random() * 200;
   nextNpcX     = 800 + Math.random() * 400;
   generateWorld(0);
 }
